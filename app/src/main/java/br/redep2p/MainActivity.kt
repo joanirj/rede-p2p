@@ -57,12 +57,17 @@ class MainActivity : Activity() {
         }
         root.addView(statusView)
 
-        root.addView(section("Este aparelho tem Wi-Fi com internet"))
+        root.addView(section("Este aparelho tem Wi-Fi com internet (ou vai repetir)"))
         root.addView(button("Compartilhar internet") { startHost() })
         root.addView(button("Parar de compartilhar") { stopHost() })
+        root.addView(hint(
+            "Para repetir: em Configurações → Wi-Fi, conecte este aparelho à rede " +
+                "${Config.NETWORK_NAME} (senha ${Config.PASSPHRASE}) e depois toque em \"Compartilhar internet\"."
+        ))
 
         root.addView(section("Este aparelho está sem internet"))
-        root.addView(button("Usar internet de outro aparelho") { startClient() })
+        root.addView(button("Usar internet de outro aparelho") { startClient(Config.NETWORK_NAME) })
+        root.addView(button("Usar internet de um repetidor") { startClient(Config.REPEATER_NAME) })
         root.addView(button("Parar de usar") { stopClient() })
 
         root.addView(section("Registro (log)"))
@@ -107,6 +112,11 @@ class MainActivity : Activity() {
         setPadding(0, (20 * resources.displayMetrics.density).toInt(), 0, 0)
     }
 
+    private fun hint(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 12f
+    }
+
     private fun button(label: String, action: () -> Unit) = Button(this).apply {
         text = label
         isAllCaps = false
@@ -120,7 +130,7 @@ class MainActivity : Activity() {
     private fun refreshStatus() {
         val host = buildString {
             append("Compartilhar: ").append(HostService.status)
-            if (HostService.running && HostService.status == "Compartilhando") {
+            if (HostService.running && HostService.ready) {
                 append("\n").append(Stats.summary())
             }
         }
@@ -177,7 +187,7 @@ class MainActivity : Activity() {
     private fun startHost() {
         if (!hasWifiDirectPermission()) return
         if (ClientVpnService.running || ClientP2p.connecting) {
-            AppLog.e("Pare o \"Usar internet\" antes de compartilhar neste aparelho.")
+            AppLog.e("Pare o \"Usar internet\" antes de compartilhar neste aparelho. Para repetir, conecte-o à rede ${Config.NETWORK_NAME} em Configurações → Wi-Fi.")
             return
         }
         AppLog.i("Iniciando o compartilhamento…")
@@ -198,11 +208,14 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_VPN) {
-            if (resultCode == RESULT_OK) connectClient() else AppLog.e("Permissão de VPN negada")
+            if (resultCode == RESULT_OK) connectClient(pendingNetwork) else AppLog.e("Permissão de VPN negada")
         }
     }
 
-    private fun startClient() {
+    /** Rede escolhida enquanto o Android pede a permissão de VPN. */
+    private var pendingNetwork = Config.NETWORK_NAME
+
+    private fun startClient(networkName: String) {
         if (!hasWifiDirectPermission()) return
         if (HostService.running) {
             AppLog.e("Pare o \"Compartilhar\" antes de usar a internet de outro aparelho.")
@@ -212,19 +225,20 @@ class MainActivity : Activity() {
             AppLog.i("Já está conectado")
             return
         }
+        pendingNetwork = networkName
         val prepare = VpnService.prepare(this)
         if (prepare != null) {
             AppLog.i("Pedindo permissão para criar a VPN local…")
             @Suppress("DEPRECATION")
             startActivityForResult(prepare, REQ_VPN)
         } else {
-            connectClient()
+            connectClient(networkName)
         }
     }
 
-    private fun connectClient() {
+    private fun connectClient(networkName: String) {
         val app = applicationContext
-        ClientP2p.connect(this) { host ->
+        ClientP2p.connect(this, networkName) { host ->
             app.startService(
                 Intent(app, ClientVpnService::class.java)
                     .setAction(ClientVpnService.ACTION_START)

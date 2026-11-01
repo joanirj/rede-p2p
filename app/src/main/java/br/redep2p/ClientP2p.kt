@@ -2,13 +2,10 @@ package br.redep2p
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Handler
 import android.os.Looper
-import java.net.Inet4Address
 
 /**
  * Cliente: entra no grupo Wi-Fi Direct do compartilhador usando o nome e a senha
@@ -29,7 +26,7 @@ object ClientP2p {
         private set
 
     @SuppressLint("MissingPermission")
-    fun connect(context: Context, onReady: (String) -> Unit) {
+    fun connect(context: Context, networkName: String, onReady: (String) -> Unit) {
         val app = context.applicationContext
         val m = app.getSystemService(WifiP2pManager::class.java)
         if (m == null) {
@@ -47,10 +44,10 @@ object ClientP2p {
 
         // Plano B: o aparelho já está na rede do compartilhador como Wi-Fi comum
         // (conectado manualmente em Configurações → Wi-Fi).
-        val legacy = legacyGateway(app)
+        val legacy = findDirectWifi(app)
         if (legacy != null) {
             AppLog.i("Este aparelho está na rede do compartilhador como Wi-Fi comum")
-            ready(legacy, onReady)
+            ready(legacy.gateway, onReady)
             return
         }
 
@@ -59,22 +56,22 @@ object ClientP2p {
             if (info != null && info.groupFormed && !info.isGroupOwner && info.groupOwnerAddress != null) {
                 ready(info.groupOwnerAddress.hostAddress ?: return@requestConnectionInfo, onReady)
             } else {
-                join(m, ch, onReady)
+                join(m, ch, networkName, onReady)
             }
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun join(m: WifiP2pManager, ch: WifiP2pManager.Channel, onReady: (String) -> Unit) {
+    private fun join(m: WifiP2pManager, ch: WifiP2pManager.Channel, networkName: String, onReady: (String) -> Unit) {
         val config = WifiP2pConfig.Builder()
-            .setNetworkName(Config.NETWORK_NAME)
+            .setNetworkName(networkName)
             .setPassphrase(Config.PASSPHRASE)
             .build()
-        AppLog.i("Procurando a rede ${Config.NETWORK_NAME}…")
+        AppLog.i("Procurando a rede $networkName…")
         m.connect(ch, config, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 AppLog.i("Pedido de conexão aceito pelo sistema, aguardando…")
-                handler.postDelayed({ poll(m, ch, onReady, 0) }, 1000)
+                handler.postDelayed({ poll(m, ch, networkName, onReady, 0) }, 1000)
             }
 
             override fun onFailure(reason: Int) {
@@ -85,40 +82,21 @@ object ClientP2p {
     }
 
     @SuppressLint("MissingPermission")
-    private fun poll(m: WifiP2pManager, ch: WifiP2pManager.Channel, onReady: (String) -> Unit, attempt: Int) {
+    private fun poll(m: WifiP2pManager, ch: WifiP2pManager.Channel, networkName: String, onReady: (String) -> Unit, attempt: Int) {
         if (!connecting) return
         m.requestConnectionInfo(ch) { info ->
             val addr = info?.groupOwnerAddress?.hostAddress
             if (info != null && info.groupFormed && !info.isGroupOwner && addr != null) {
                 ready(addr, onReady)
             } else if (attempt < 40) {
-                handler.postDelayed({ poll(m, ch, onReady, attempt + 1) }, 1000)
+                handler.postDelayed({ poll(m, ch, networkName, onReady, attempt + 1) }, 1000)
             } else {
                 connecting = false
-                AppLog.e("Não encontrei o compartilhador em 40 s pelo Wi-Fi Direct.")
-                AppLog.i("Plano B: em Configurações → Wi-Fi, conecte à rede ${Config.NETWORK_NAME} (senha ${Config.PASSPHRASE}), volte aqui e toque de novo em \"Usar internet de outro aparelho\".")
+                AppLog.e("Não encontrei a rede $networkName em 40 s pelo Wi-Fi Direct.")
+                AppLog.i("Plano B: em Configurações → Wi-Fi, conecte à rede $networkName (senha ${Config.PASSPHRASE}), volte aqui e toque de novo no botão.")
                 m.cancelConnect(ch, null)
             }
         }
-    }
-
-    /** Gateway 192.168.49.x de uma rede Wi-Fi comum, se o aparelho estiver nela. */
-    @Suppress("DEPRECATION")
-    private fun legacyGateway(context: Context): String? {
-        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
-        for (network in cm.allNetworks) {
-            val caps = cm.getNetworkCapabilities(network) ?: continue
-            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
-            val lp = cm.getLinkProperties(network) ?: continue
-            for (route in lp.routes) {
-                val gw = route.gateway as? Inet4Address ?: continue
-                val b = gw.address
-                if (route.isDefaultRoute && b[0] == 192.toByte() && b[1] == 168.toByte() && b[2] == 49.toByte()) {
-                    return gw.hostAddress
-                }
-            }
-        }
-        return null
     }
 
     private fun ready(address: String, onReady: (String) -> Unit) {

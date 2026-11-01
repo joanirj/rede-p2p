@@ -21,6 +21,17 @@ Esta é a **etapa 1** da prova de conceito: só conectividade, ainda sem crédit
 
 No Android 10, deixe a **localização** ligada: o sistema exige isso para o Wi-Fi Direct.
 
+## Como testar o repetidor (3 aparelhos)
+
+1. **Compartilhador:** no Wi-Fi de casa, toque em **Compartilhar internet**.
+2. **Repetidor:** em Configurações → Wi-Fi, conecte à rede `DIRECT-RP-RedeP2P` (senha `redep2p123`).
+   Depois, no app, toque em **Compartilhar internet**. O status deve mostrar "Repetindo (2 salto(s) até a internet)".
+3. **Cliente da ponta:** toque em **Usar internet de um repetidor**.
+
+Todo dono de grupo Wi-Fi Direct no Android tem o endereço 192.168.49.1. Por isso o repetidor fala com o
+aparelho de cima pelo endereço IPv6 link-local dele, descoberto em `http://192.168.49.1:8080/redep2p/info`
+antes de criar a própria rede.
+
 ## Como funciona
 
 - O compartilhador cria um grupo Wi-Fi Direct (`DIRECT-RP-RedeP2P`) e roda um proxy SOCKS5

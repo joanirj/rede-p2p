@@ -12,13 +12,19 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** Versão exibida no app e enviada com o log. */
 object BuildInfo {
-    const val VERSION = "0.1.4"
+    const val VERSION = "0.2.0"
 }
 
 /** Parâmetros fixos da versão de teste. */
 object Config {
     /** O Android exige que redes Wi-Fi Direct comecem com "DIRECT-xy-". */
     const val NETWORK_NAME = "DIRECT-RP-RedeP2P"
+
+    /** Rede criada por um repetidor (aparelho que recebe e repassa a internet). */
+    const val REPEATER_NAME = "DIRECT-RP-Repetidor"
+
+    /** Endereço que informa saltos até a internet e o IPv6 link-local do aparelho. */
+    const val INFO_PATH = "/redep2p/info"
     const val PASSPHRASE = "redep2p123"
     const val SOCKS_PORT = 1080
     const val HTTP_PORT = 8080

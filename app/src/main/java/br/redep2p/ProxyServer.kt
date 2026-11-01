@@ -12,21 +12,31 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Proxy do compartilhador.
+ * Proxy do compartilhador (ou do repetidor).
  * - SOCKS5 (TCP + UDP ASSOCIATE) na porta 1080: usado pelo app cliente.
  * - HTTP (CONNECT e requisições simples) na porta 8080: permite testar
  *   configurando o proxy manualmente no Wi-Fi do outro aparelho.
- * Só aceita conexões vindas da rede Wi-Fi Direct (192.168.49.x).
+ *   Também responde em /redep2p/info com os saltos até a internet e o
+ *   endereço IPv6 link-local deste aparelho (usado por repetidores).
+ * Só aceita conexões da rede Wi-Fi Direct (192.168.49.x ou IPv6 link-local).
+ *
+ * Sem [upstream], sai direto para a internet. Com [upstream], encaminha tudo
+ * ao proxy do aparelho de cima (modo repetidor).
  */
-class ProxyServer(private val executor: ExecutorService) {
+class ProxyServer(private val executor: ExecutorService, private val upstream: Upstream? = null) {
+
+    /** Saltos até a internet: 0 no compartilhador, 1 no primeiro repetidor… */
+    private val hops = upstream?.let { it.hops + 1 } ?: 0
 
     @Volatile
     private var running = false
@@ -89,6 +99,7 @@ class ProxyServer(private val executor: ExecutorService) {
 
     private fun isAllowed(addr: InetAddress): Boolean {
         if (addr.isLoopbackAddress) return true
+        if (addr is Inet6Address && addr.isLinkLocalAddress) return true
         val b = (addr as? Inet4Address)?.address ?: return false
         return b[0] == 192.toByte() && b[1] == 168.toByte() && b[2] == 49.toByte()
     }
@@ -134,14 +145,25 @@ class ProxyServer(private val executor: ExecutorService) {
         out.flush()
     }
 
-    private fun socksConnect(client: Socket, input: InputStream, out: OutputStream, host: String, port: Int) {
+    /** Conecta ao destino: direto pela internet ou pelo aparelho de cima. */
+    private fun openRemote(host: String, port: Int): Socket {
+        upstream?.let { return it.connect(host, port) }
         val remote = Socket()
         try {
             remote.connect(InetSocketAddress(host, port), 10_000)
             remote.tcpNoDelay = true
+            return remote
+        } catch (e: IOException) {
+            remote.closeQuietly()
+            throw e
+        }
+    }
+
+    private fun socksConnect(client: Socket, input: InputStream, out: OutputStream, host: String, port: Int) {
+        val remote = try {
+            openRemote(host, port)
         } catch (e: IOException) {
             socksReply(out, 5) // conexão recusada
-            remote.closeQuietly()
             return
         }
         socksReply(out, 0, remote.localAddress, remote.localPort)
@@ -153,6 +175,11 @@ class ProxyServer(private val executor: ExecutorService) {
     }
 
     private fun socksUdpAssociate(client: Socket, input: InputStream, out: OutputStream) {
+        val up = upstream
+        if (up != null) {
+            chainedUdpAssociate(client, input, out, up)
+            return
+        }
         val udp = DatagramSocket(InetSocketAddress(0))
         val clientIp = client.inetAddress
         socksReply(out, 0, client.localAddress, udp.localPort)
@@ -231,6 +258,85 @@ class ProxyServer(private val executor: ExecutorService) {
         }
     }
 
+    /**
+     * Repetidor: os pacotes UDP do cliente já vêm com o cabeçalho SOCKS5, no mesmo
+     * formato que o proxy de cima espera. Basta repassá-los sem mexer, nos dois sentidos.
+     */
+    private fun chainedUdpAssociate(client: Socket, input: InputStream, out: OutputStream, up: Upstream) {
+        val (control, relay) = try {
+            up.udpAssociate()
+        } catch (e: IOException) {
+            AppLog.e("UDP pelo aparelho de cima falhou", e)
+            socksReply(out, 1)
+            return
+        }
+        val local = DatagramSocket(InetSocketAddress(0))
+        val upward = up.datagramSocket()
+        val clientIp = client.inetAddress
+        val clientPort = AtomicInteger(-1)
+        socksReply(out, 0, client.localAddress, local.localPort)
+
+        val fromClient = executor.submit {
+            val buf = ByteArray(65535)
+            while (!local.isClosed) {
+                val p = DatagramPacket(buf, buf.size)
+                try {
+                    local.receive(p)
+                } catch (ignored: IOException) {
+                    break
+                }
+                if (p.address != clientIp) continue
+                clientPort.set(p.port)
+                try {
+                    upward.send(DatagramPacket(buf, 0, p.length, relay))
+                    Stats.up.addAndGet(p.length.toLong())
+                } catch (ignored: IOException) {
+                }
+            }
+        }
+        val fromUpstream = executor.submit {
+            val buf = ByteArray(65535)
+            while (!upward.isClosed) {
+                val p = DatagramPacket(buf, buf.size)
+                try {
+                    upward.receive(p)
+                } catch (ignored: IOException) {
+                    break
+                }
+                val port = clientPort.get()
+                if (port <= 0) continue
+                try {
+                    local.send(DatagramPacket(buf, 0, p.length, clientIp, port))
+                    Stats.down.addAndGet(p.length.toLong())
+                } catch (ignored: IOException) {
+                }
+            }
+        }
+        // Encerra quando qualquer uma das conexões de controle (de baixo ou de cima) fechar.
+        val watchUp = executor.submit {
+            try {
+                while (control.getInputStream().read() >= 0) {
+                    // descarta
+                }
+            } catch (ignored: IOException) {
+            }
+            client.closeQuietly()
+        }
+        try {
+            while (input.read() >= 0) {
+                // descarta
+            }
+        } catch (ignored: IOException) {
+        } finally {
+            control.closeQuietly()
+            local.close()
+            upward.close()
+            fromClient.cancel(true)
+            fromUpstream.cancel(true)
+            watchUp.cancel(true)
+        }
+    }
+
     // ------------------------------------------------------------------ HTTP
 
     private fun handleHttp(client: Socket) {
@@ -245,15 +351,17 @@ class ProxyServer(private val executor: ExecutorService) {
         val target = parts[1]
         val version = parts[2]
 
+        if (target.startsWith(Config.INFO_PATH)) {
+            sendInfo(client, out)
+            return
+        }
+
         if (method.equals("CONNECT", ignoreCase = true)) {
             val (host, port) = splitHostPort(target, 443)
-            val remote = Socket()
-            try {
-                remote.connect(InetSocketAddress(host, port), 10_000)
-                remote.tcpNoDelay = true
+            val remote = try {
+                openRemote(host, port)
             } catch (e: IOException) {
                 out.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n".toByteArray())
-                remote.closeQuietly()
                 return
             }
             out.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
@@ -288,12 +396,10 @@ class ProxyServer(private val executor: ExecutorService) {
         }
         newHead.append("Connection: close\r\n\r\n")
 
-        val remote = Socket()
-        try {
-            remote.connect(InetSocketAddress(host, port), 10_000)
+        val remote = try {
+            openRemote(host, port)
         } catch (e: IOException) {
             out.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n".toByteArray())
-            remote.closeQuietly()
             return
         }
         try {
@@ -304,6 +410,24 @@ class ProxyServer(private val executor: ExecutorService) {
         } finally {
             remote.closeQuietly()
         }
+    }
+
+    /** Informa saltos até a internet e o endereço IPv6 link-local da interface Wi-Fi Direct. */
+    private fun sendInfo(client: Socket, out: OutputStream) {
+        val ll = try {
+            NetworkInterface.getByInetAddress(client.localAddress)?.inetAddresses?.toList()
+                ?.firstOrNull { it is Inet6Address && it.isLinkLocalAddress }
+                ?.hostAddress?.substringBefore('%')
+        } catch (e: Exception) {
+            null
+        } ?: ""
+        val body = "hops=$hops\nll=$ll\n"
+        out.write(
+            ("HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ${body.length}\r\n" +
+                "Connection: close\r\n\r\n$body").toByteArray()
+        )
+        out.flush()
+        AppLog.i("Repetidor ${client.inetAddress.hostAddress} pediu informações (saltos=$hops, IPv6 ${ll.ifEmpty { "ausente" }})")
     }
 
     /** Lê o cabeçalho HTTP até a linha em branco. */

@@ -22,6 +22,9 @@ import java.util.concurrent.Executors
 /**
  * Compartilhador: cria o grupo Wi-Fi Direct (este aparelho vira o "dono do grupo")
  * e roda o proxy que encaminha o tráfego dos clientes pela rede Wi-Fi comum.
+ *
+ * Modo repetidor: se a rede Wi-Fi comum deste aparelho for a rede de outro aparelho
+ * do app (DIRECT-RP-…), ele cria a própria rede e repassa o tráfego para o de cima.
  */
 class HostService : Service() {
 
@@ -33,6 +36,10 @@ class HostService : Service() {
 
         @Volatile
         var status = "Parado"
+
+        /** Proxy no ar e aceitando clientes. */
+        @Volatile
+        var ready = false
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -41,6 +48,7 @@ class HostService : Service() {
     private var executor: ExecutorService? = null
     private var proxy: ProxyServer? = null
     private var upstreamFrequency = 0
+    private var upstream: Upstream? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -60,7 +68,24 @@ class HostService : Service() {
         Stats.reset()
         status = "Iniciando…"
         logUpstream()
-        startGroup()
+        val direct = findDirectWifi(this)
+        if (direct == null) {
+            startGroup()
+        } else {
+            status = "Conectando ao aparelho de cima…"
+            AppLog.i("Este aparelho está na rede de outro aparelho do app: modo repetidor")
+            Thread {
+                try {
+                    val up = Upstream.discover(direct)
+                    upstream = up
+                    AppLog.i("Aparelho de cima: ${up.hops} salto(s) da internet, endereço ${up.address.hostAddress}")
+                    handler.post { if (running) startGroup() }
+                } catch (e: Exception) {
+                    AppLog.e("Não consegui falar com o aparelho de cima", e)
+                    handler.post { fail("Falha no modo repetidor") }
+                }
+            }.start()
+        }
         return START_STICKY
     }
 
@@ -137,7 +162,7 @@ class HostService : Service() {
     private fun createGroup(m: WifiP2pManager, ch: WifiP2pManager.Channel, attempt: Int = 0) {
         if (!running) return
         val builder = WifiP2pConfig.Builder()
-            .setNetworkName(Config.NETWORK_NAME)
+            .setNetworkName(if (upstream != null) Config.REPEATER_NAME else Config.NETWORK_NAME)
             .setPassphrase(Config.PASSPHRASE)
             .enablePersistentMode(false)
         val description = when {
@@ -194,9 +219,16 @@ class HostService : Service() {
         try {
             val ex = Executors.newCachedThreadPool()
             executor = ex
-            proxy = ProxyServer(ex).also { it.start() }
-            status = "Compartilhando"
-            AppLog.i("Pronto. No outro aparelho, toque em \"Usar internet de outro aparelho\".")
+            val up = upstream
+            proxy = ProxyServer(ex, up).also { it.start() }
+            ready = true
+            if (up == null) {
+                status = "Compartilhando"
+                AppLog.i("Pronto. No outro aparelho, toque em \"Usar internet de outro aparelho\".")
+            } else {
+                status = "Repetindo (${up.hops + 1} salto(s) até a internet)"
+                AppLog.i("Pronto. No aparelho seguinte, toque em \"Usar internet de um repetidor\".")
+            }
         } catch (e: Exception) {
             AppLog.e("Falha ao iniciar o proxy", e)
             fail("Falha ao iniciar o proxy")
@@ -212,6 +244,7 @@ class HostService : Service() {
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
         running = false
+        ready = false
         proxy?.stop()
         proxy = null
         executor?.shutdownNow()
@@ -221,7 +254,8 @@ class HostService : Service() {
         if (m != null && ch != null) {
             m.removeGroup(ch, null)
         }
-        if (status == "Compartilhando" || status == "Iniciando…") status = "Parado"
+        if (!status.startsWith("Falha")) status = "Parado"
+        upstream = null
         AppLog.i("Compartilhamento encerrado")
         super.onDestroy()
     }
