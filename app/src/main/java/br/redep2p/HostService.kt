@@ -76,10 +76,15 @@ class HostService : Service() {
     private var upstreamFrequency = 0
     private var upstream: Upstream? = null
     private var outNetwork: Network? = null
+    private var upstreamNetwork: Network? = null
+    private var billing: BillingServer? = null
+    private var upstreamBilling: BillingClient? = null
 
     override fun onCreate() {
         super.onCreate()
         AppLog.init(applicationContext)
+        Identity.init(applicationContext)
+        Ledger.init(applicationContext)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -152,6 +157,7 @@ class HostService : Service() {
         status = "Conectando ao aparelho de cima…"
         AppLog.i("Este aparelho está na rede de outro aparelho do app: modo repetidor")
         logUpstream(wifi.network)
+        upstreamNetwork = wifi.network
         Thread {
             try {
                 val up = Upstream.discover(wifi)
@@ -317,7 +323,14 @@ class HostService : Service() {
             val ex = Executors.newCachedThreadPool()
             executor = ex
             val up = upstream
-            proxy = ProxyServer(ex, up, outNetwork).also { it.start() }
+            val meter = TrafficMeter()
+            proxy = ProxyServer(ex, up, outNetwork, meter = meter).also { it.start() }
+            billing = BillingServer(ex, meter).also { it.start() }
+            if (up != null) {
+                // O repetidor também paga ao aparelho de cima, pelo que repassa e pelo que usa.
+                upstreamBilling = BillingClient(up.address, upstreamNetwork) { Stats.up.get() + Stats.down.get() }
+                    .also { it.start() }
+            }
             ready = true
             if (up == null) {
                 status = if (outNetwork != null) "Compartilhando (2,4 GHz)" else "Compartilhando"
@@ -351,6 +364,11 @@ class HostService : Service() {
         repeater = false
         ownTrafficViaProxy = false
         channelWarning = null
+        billing?.stop()
+        billing = null
+        upstreamBilling?.stop()
+        upstreamBilling = null
+        upstreamNetwork = null
         proxy?.stop()
         proxy = null
         executor?.shutdownNow()

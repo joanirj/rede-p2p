@@ -40,7 +40,9 @@ class ProxyServer(
     /** Rede de saída específica (modo 2,4 GHz). Sem ela, usa a rede padrão do aparelho. */
     private val outNetwork: Network? = null,
     /** Só aceita conexões do próprio aparelho (proxy local do cliente). */
-    private val loopbackOnly: Boolean = false
+    private val loopbackOnly: Boolean = false,
+    /** Contagem e bloqueio por cliente (cobrança). O próprio aparelho (127.0.0.1) não é cobrado. */
+    private val meter: TrafficMeter? = null
 ) {
 
     /** Saltos até a internet: 0 no compartilhador, 1 no primeiro repetidor… */
@@ -91,6 +93,12 @@ class ProxyServer(
                 client.closeQuietly()
                 continue
             }
+            val billedIp = billedIp(client.inetAddress)
+            if (billedIp != null && meter?.allowed(billedIp) == false) {
+                // Passou do limite sem pagar: recusa até chegar um recibo.
+                client.closeQuietly()
+                continue
+            }
             executor.execute {
                 Stats.active.incrementAndGet()
                 Stats.total.incrementAndGet()
@@ -107,6 +115,10 @@ class ProxyServer(
             }
         }
     }
+
+    /** Endereço usado na cobrança; null para o próprio aparelho, que não é cobrado. */
+    private fun billedIp(addr: InetAddress): String? =
+        if (meter == null || addr.isLoopbackAddress) null else normalizeIp(addr)
 
     private fun isAllowed(addr: InetAddress): Boolean {
         if (addr.isLoopbackAddress) return true
@@ -203,8 +215,9 @@ class ProxyServer(
         val clientIp = client.inetAddress
         val clientPort = AtomicInteger(-1)
         socksReply(out, 0, client.localAddress, local.localPort)
-        val fromClient = executor.submit { udpFromClient(local, outward, clientIp, clientPort) }
-        val fromInternet = executor.submit { udpFromInternet(outward, local, clientIp, clientPort) }
+        val ip = billedIp(clientIp)
+        val fromClient = executor.submit { udpFromClient(local, outward, clientIp, clientPort, ip) }
+        val fromInternet = executor.submit { udpFromInternet(outward, local, clientIp, clientPort, ip) }
         try {
             // A associação UDP vive enquanto a conexão TCP de controle estiver aberta.
             while (input.read() >= 0) {
@@ -220,7 +233,13 @@ class ProxyServer(
     }
 
     /** Do cliente: tira o cabeçalho SOCKS5 UDP e envia os dados ao destino. */
-    private fun udpFromClient(local: DatagramSocket, outward: DatagramSocket, clientIp: InetAddress, clientPort: AtomicInteger) {
+    private fun udpFromClient(
+        local: DatagramSocket,
+        outward: DatagramSocket,
+        clientIp: InetAddress,
+        clientPort: AtomicInteger,
+        ip: String?
+    ) {
         val buf = ByteArray(65535)
         while (!local.isClosed) {
             val packet = DatagramPacket(buf, buf.size)
@@ -259,6 +278,10 @@ class ProxyServer(
             val port = ((buf[pos].toInt() and 0xff) shl 8) or (buf[pos + 1].toInt() and 0xff)
             pos += 2
             val dataLen = len - pos
+            if (ip != null && meter != null) {
+                if (!meter.allowed(ip)) continue
+                meter.add(ip, dataLen.toLong())
+            }
             try {
                 outward.send(DatagramPacket(buf, pos, dataLen, dst, port))
                 Stats.up.addAndGet(dataLen.toLong())
@@ -268,7 +291,13 @@ class ProxyServer(
     }
 
     /** Da internet: acrescenta o cabeçalho SOCKS5 UDP e devolve ao cliente. */
-    private fun udpFromInternet(outward: DatagramSocket, local: DatagramSocket, clientIp: InetAddress, clientPort: AtomicInteger) {
+    private fun udpFromInternet(
+        outward: DatagramSocket,
+        local: DatagramSocket,
+        clientIp: InetAddress,
+        clientPort: AtomicInteger,
+        ip: String?
+    ) {
         val buf = ByteArray(65535)
         while (!outward.isClosed) {
             val packet = DatagramPacket(buf, buf.size)
@@ -284,6 +313,7 @@ class ProxyServer(
             val header = byteArrayOf(0, 0, 0, atyp) + src.address +
                 byteArrayOf((packet.port shr 8).toByte(), packet.port.toByte())
             val reply = header + buf.copyOfRange(0, packet.length)
+            if (ip != null) meter?.add(ip, packet.length.toLong())
             try {
                 local.send(DatagramPacket(reply, reply.size, clientIp, port))
                 Stats.down.addAndGet(packet.length.toLong())
@@ -308,6 +338,7 @@ class ProxyServer(
         val upward = up.datagramSocket()
         val clientIp = client.inetAddress
         val clientPort = AtomicInteger(-1)
+        val ip = billedIp(clientIp)
         socksReply(out, 0, client.localAddress, local.localPort)
 
         val fromClient = executor.submit {
@@ -321,6 +352,10 @@ class ProxyServer(
                 }
                 if (p.address != clientIp) continue
                 clientPort.set(p.port)
+                if (ip != null && meter != null) {
+                    if (!meter.allowed(ip)) continue
+                    meter.add(ip, p.length.toLong())
+                }
                 try {
                     upward.send(DatagramPacket(buf, 0, p.length, relay))
                     Stats.up.addAndGet(p.length.toLong())
@@ -339,6 +374,7 @@ class ProxyServer(
                 }
                 val port = clientPort.get()
                 if (port <= 0) continue
+                if (ip != null) meter?.add(ip, p.length.toLong())
                 try {
                     local.send(DatagramPacket(buf, 0, p.length, clientIp, port))
                     Stats.down.addAndGet(p.length.toLong())
@@ -495,14 +531,15 @@ class ProxyServer(
 
     /** Copia nos dois sentidos até as duas pontas encerrarem. */
     private fun relay(clientIn: InputStream, client: Socket, remote: Socket) {
+        val ip = billedIp(client.inetAddress)
         val upTask = executor.submit {
-            copy(clientIn, remote.getOutputStream(), Stats.up)
+            copy(clientIn, remote.getOutputStream(), Stats.up, ip)
             try {
                 remote.shutdownOutput()
             } catch (ignored: Exception) {
             }
         }
-        copy(remote.getInputStream(), client.getOutputStream(), Stats.down)
+        copy(remote.getInputStream(), client.getOutputStream(), Stats.down, ip)
         try {
             client.shutdownOutput()
         } catch (ignored: Exception) {
@@ -515,7 +552,7 @@ class ProxyServer(
         remote.closeQuietly()
     }
 
-    private fun copy(input: InputStream, output: OutputStream, counter: AtomicLong) {
+    private fun copy(input: InputStream, output: OutputStream, counter: AtomicLong, ip: String?) {
         val buf = ByteArray(16 * 1024)
         try {
             while (true) {
@@ -524,6 +561,10 @@ class ProxyServer(
                 output.write(buf, 0, n)
                 output.flush()
                 counter.addAndGet(n.toLong())
+                if (ip != null && meter != null) {
+                    meter.add(ip, n.toLong())
+                    if (!meter.allowed(ip)) break // sem pagamento: encerra a conexão
+                }
             }
         } catch (ignored: IOException) {
         }

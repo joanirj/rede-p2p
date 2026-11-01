@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** Versão exibida no app e enviada com o log. */
 object BuildInfo {
-    const val VERSION = "0.3.0"
+    const val VERSION = "0.4.0"
 }
 
 /** Parâmetros fixos da versão de teste. */
@@ -28,6 +28,8 @@ object Config {
     const val PASSPHRASE = "redep2p123"
     const val SOCKS_PORT = 1080
     const val HTTP_PORT = 8080
+    /** Porta da sessão de cobrança (ofertas, contas e recibos). */
+    const val CONTROL_PORT = 8090
     const val MTU = 1500
 }
 

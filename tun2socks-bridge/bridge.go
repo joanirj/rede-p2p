@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/xjasonlyu/tun2socks/v2/engine"
+	"github.com/xjasonlyu/tun2socks/v2/tunnel/statistic"
 )
 
 var (
@@ -43,4 +44,15 @@ func Stop() {
 	}
 	engine.Stop()
 	running = false
+}
+
+// Uploaded devolve o total de bytes enviados pelo túnel desde que o app abriu.
+// O cliente usa isso para conferir a cobrança do compartilhador.
+func Uploaded() int64 {
+	return statistic.DefaultManager.Snapshot().UploadTotal
+}
+
+// Downloaded devolve o total de bytes recebidos pelo túnel desde que o app abriu.
+func Downloaded() int64 {
+	return statistic.DefaultManager.Snapshot().DownloadTotal
 }

@@ -35,10 +35,13 @@ class ClientVpnService : VpnService() {
     /** Proxy local (127.0.0.1) que leva o tráfego ao compartilhador pela rede certa. */
     private var relay: ProxyServer? = null
     private var relayExecutor: ExecutorService? = null
+    private var billing: BillingClient? = null
 
     override fun onCreate() {
         super.onCreate()
         AppLog.init(applicationContext)
+        Identity.init(applicationContext)
+        Ledger.init(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -121,6 +124,11 @@ class ClientVpnService : VpnService() {
                 AppLog.i("Iniciando o tun2socks (fd $fd, $proxy)…")
                 bridge.Bridge.start(fd.toLong(), proxy, Config.MTU.toLong())
                 AppLog.i("Túnel ativo: todo o tráfego passa pelo compartilhador. Teste abrindo um site.")
+                if (host != "127.0.0.1") {
+                    billing = BillingClient(InetAddress.getByName(host), network) {
+                        bridge.Bridge.uploaded() + bridge.Bridge.downloaded()
+                    }.also { it.start() }
+                }
             } catch (e: Throwable) {
                 running = false
                 AppLog.e("Falha ao iniciar o túnel", e)
@@ -161,6 +169,8 @@ class ClientVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        billing?.stop()
+        billing = null
         if (running) {
             running = false
             try {

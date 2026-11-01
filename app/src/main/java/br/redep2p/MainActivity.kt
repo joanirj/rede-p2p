@@ -31,6 +31,7 @@ class MainActivity : Activity() {
     }
 
     private lateinit var statusView: TextView
+    private lateinit var creditsView: TextView
     private lateinit var logView: TextView
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -43,6 +44,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLog.init(applicationContext)
+        Identity.init(applicationContext)
+        Ledger.init(applicationContext)
         val pad = (16 * resources.displayMetrics.density).toInt()
 
         val root = LinearLayout(this).apply {
@@ -72,6 +75,15 @@ class MainActivity : Activity() {
         root.addView(button("Usar internet de outro aparelho") { startClient(Config.NETWORK_NAME) })
         root.addView(button("Usar internet de um repetidor") { startClient(Config.REPEATER_NAME) })
         root.addView(button("Parar de usar") { stopClient() })
+
+        root.addView(section("Créditos"))
+        creditsView = TextView(this).apply { textSize = 14f }
+        root.addView(creditsView)
+        root.addView(button("Recarregar saldo de teste (+${Pricing.credits(Pricing.TEST_TOPUP_MILLI)} créditos)") {
+            Ledger.topUp(Pricing.TEST_TOPUP_MILLI)
+            AppLog.i("Saldo de teste recarregado")
+            refreshStatus()
+        })
 
         root.addView(section("Registro (log)"))
         root.addView(button("Enviar log ao Claude (abre o GitHub)") { sendLogToGitHub() })
@@ -145,6 +157,16 @@ class MainActivity : Activity() {
             else -> "Usar internet: desligado"
         }
         statusView.text = "$host\n$client"
+
+        creditsView.text = buildString {
+            append("Saldo: ").append(Pricing.credits(Ledger.balance)).append(" créditos")
+            append(" (ganhou ").append(Pricing.credits(Ledger.earned))
+            append(", gastou ").append(Pricing.credits(Ledger.spent)).append(")\n")
+            append("Preço: ").append(Pricing.credits(Pricing.PRICE_MILLI_PER_MB)).append(" crédito por MB\n")
+            append("Sua identidade: ").append(Identity.shortId)
+            if (HostService.running) BillingState.hostSummary?.let { append("\n").append(it) }
+            BillingState.clientSummary?.let { append("\n").append(it) }
+        }
     }
 
     // ------------------------------------------------------------ permissões
