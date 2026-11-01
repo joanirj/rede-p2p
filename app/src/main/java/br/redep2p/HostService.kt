@@ -48,6 +48,10 @@ class HostService : Service() {
         /** Este aparelho está repetindo a internet de outro (e não do Wi-Fi de casa). */
         @Volatile
         var repeater = false
+
+        /** Aviso curto para a tela quando os canais ficaram diferentes. */
+        @Volatile
+        var channelWarning: String? = null
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -237,8 +241,27 @@ class HostService : Service() {
                 return@requestGroupInfo
             }
             AppLog.i("Rede: ${group.networkName} · senha: ${group.passphrase} · ${group.frequency} MHz · interface ${group.`interface`}")
+            warnIfChannelsDiffer(group.frequency)
             startProxy()
         }
+    }
+
+    /**
+     * Se a rede Wi-Fi Direct ficou num canal diferente do Wi-Fi de saída, o rádio
+     * alterna entre os dois e os outros aparelhos costumam não conseguir conectar.
+     */
+    private fun warnIfChannelsDiffer(groupFrequency: Int) {
+        val up = upstreamFrequency
+        if (up <= 0 || groupFrequency <= 0 || up == groupFrequency) {
+            channelWarning = null
+            return
+        }
+        val dfs = up in 5250..5730
+        val msg = "Atenção: a rede Wi-Fi Direct ficou em $groupFrequency MHz e o Wi-Fi de saída está em $up MHz" +
+            (if (dfs) " (canal de 5 GHz que o Wi-Fi Direct não pode usar)" else "") +
+            ". Os outros aparelhos podem não conseguir conectar. Ligue este aparelho à rede de 2,4 GHz do roteador e reinicie o compartilhamento."
+        AppLog.e(msg)
+        channelWarning = "Canais diferentes ($up e $groupFrequency MHz): use a rede 2,4 GHz do roteador"
     }
 
     private fun startProxy() {
@@ -274,6 +297,7 @@ class HostService : Service() {
         running = false
         ready = false
         repeater = false
+        channelWarning = null
         proxy?.stop()
         proxy = null
         executor?.shutdownNow()

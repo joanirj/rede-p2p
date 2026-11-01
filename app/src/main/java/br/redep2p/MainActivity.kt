@@ -133,6 +133,7 @@ class MainActivity : Activity() {
             if (HostService.running && HostService.ready) {
                 append("\n").append(Stats.summary())
             }
+            HostService.channelWarning?.let { append("\n⚠ ").append(it) }
         }
         val client = when {
             ClientVpnService.running && HostService.repeater -> "Usar internet: pelo próprio repetidor"
