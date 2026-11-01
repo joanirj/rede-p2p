@@ -135,6 +135,7 @@ class MainActivity : Activity() {
             }
         }
         val client = when {
+            ClientVpnService.running && HostService.repeater -> "Usar internet: pelo próprio repetidor"
             ClientVpnService.running -> "Usar internet: conectado ao compartilhador (${ClientP2p.hostAddress})"
             ClientP2p.connecting -> "Usar internet: procurando o compartilhador…"
             else -> "Usar internet: desligado"
@@ -217,7 +218,7 @@ class MainActivity : Activity() {
 
     private fun startClient(networkName: String) {
         if (!hasWifiDirectPermission()) return
-        if (HostService.running) {
+        if (HostService.running && !(HostService.repeater && HostService.ready)) {
             AppLog.e("Pare o \"Compartilhar\" antes de usar a internet de outro aparelho.")
             return
         }
@@ -238,6 +239,16 @@ class MainActivity : Activity() {
 
     private fun connectClient(networkName: String) {
         val app = applicationContext
+        if (HostService.repeater && HostService.ready) {
+            // O repetidor usa o próprio proxy (que já encaminha para o aparelho de cima).
+            AppLog.i("Repetidor: usando a internet pelo próprio proxy deste aparelho")
+            app.startService(
+                Intent(app, ClientVpnService::class.java)
+                    .setAction(ClientVpnService.ACTION_START)
+                    .putExtra(ClientVpnService.EXTRA_HOST, "127.0.0.1")
+            )
+            return
+        }
         ClientP2p.connect(this, networkName) { host ->
             app.startService(
                 Intent(app, ClientVpnService::class.java)

@@ -62,7 +62,13 @@ object ClientP2p {
     }
 
     @SuppressLint("MissingPermission")
-    private fun join(m: WifiP2pManager, ch: WifiP2pManager.Channel, networkName: String, onReady: (String) -> Unit) {
+    private fun join(
+        m: WifiP2pManager,
+        ch: WifiP2pManager.Channel,
+        networkName: String,
+        onReady: (String) -> Unit,
+        attempt: Int = 0
+    ) {
         val config = WifiP2pConfig.Builder()
             .setNetworkName(networkName)
             .setPassphrase(Config.PASSPHRASE)
@@ -75,8 +81,22 @@ object ClientP2p {
             }
 
             override fun onFailure(reason: Int) {
+                if (reason == WifiP2pManager.BUSY && attempt < 3) {
+                    // Outra operação Wi-Fi Direct em andamento (busca, convite, grupo antigo):
+                    // cancela tudo e tenta de novo.
+                    AppLog.i("Wi-Fi Direct ocupado; liberando e tentando de novo (${attempt + 1}/3)…")
+                    m.stopPeerDiscovery(ch, null)
+                    m.cancelConnect(ch, null)
+                    m.removeGroup(ch, null)
+                    handler.postDelayed({ join(m, ch, networkName, onReady, attempt + 1) }, 2500)
+                    return
+                }
                 connecting = false
                 AppLog.e("Não consegui pedir a conexão: ${p2pReason(reason)}")
+                if (reason == WifiP2pManager.BUSY) {
+                    AppLog.i("Feche o espelhamento de tela, o Quick Share/Nearby e a tela de Wi-Fi Direct das configurações, se estiverem abertos.")
+                    AppLog.i("Plano B: em Configurações → Wi-Fi, conecte à rede $networkName (senha ${Config.PASSPHRASE}), volte aqui e toque de novo no botão.")
+                }
             }
         })
     }

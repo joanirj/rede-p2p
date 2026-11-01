@@ -40,6 +40,10 @@ class HostService : Service() {
         /** Proxy no ar e aceitando clientes. */
         @Volatile
         var ready = false
+
+        /** Este aparelho está repetindo a internet de outro (e não do Wi-Fi de casa). */
+        @Volatile
+        var repeater = false
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -78,6 +82,7 @@ class HostService : Service() {
                 try {
                     val up = Upstream.discover(direct)
                     upstream = up
+                    repeater = true
                     AppLog.i("Aparelho de cima: ${up.hops} salto(s) da internet, endereço ${up.address.hostAddress}")
                     handler.post { if (running) startGroup() }
                 } catch (e: Exception) {
@@ -245,6 +250,7 @@ class HostService : Service() {
     override fun onDestroy() {
         running = false
         ready = false
+        repeater = false
         proxy?.stop()
         proxy = null
         executor?.shutdownNow()
