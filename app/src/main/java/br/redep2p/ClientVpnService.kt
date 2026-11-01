@@ -1,7 +1,12 @@
 package br.redep2p
 
 import android.content.Intent
+import android.net.Network
 import android.net.VpnService
+import android.os.Build
+import java.net.InetAddress
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.io.DataInputStream
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -20,9 +25,16 @@ class ClientVpnService : VpnService() {
         const val ACTION_STOP = "br.redep2p.STOP_CLIENT"
         const val EXTRA_HOST = "host"
 
+        /** Rede Wi-Fi comum até o compartilhador (quando não é a rede padrão do aparelho). */
+        const val EXTRA_NETWORK = "network"
+
         @Volatile
         var running = false
     }
+
+    /** Proxy local (127.0.0.1) que leva o tráfego ao compartilhador pela rede certa. */
+    private var relay: ProxyServer? = null
+    private var relayExecutor: ExecutorService? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -38,20 +50,48 @@ class ClientVpnService : VpnService() {
             }
             ACTION_START -> {
                 val host = intent.getStringExtra(EXTRA_HOST)
+                val network: Network? = if (Build.VERSION.SDK_INT >= 33) {
+                    intent.getParcelableExtra(EXTRA_NETWORK, Network::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(EXTRA_NETWORK)
+                }
                 if (host == null) {
                     AppLog.e("Endereço do compartilhador ausente")
                 } else {
-                    startTunnel(host)
+                    startTunnel(host, network)
                 }
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startTunnel(host: String) {
+    private fun startTunnel(host: String, network: Network?) {
         if (running) {
             AppLog.i("O túnel já está ativo")
             return
+        }
+        // Wi-Fi comum que não é a rede padrão: o tun2socks (em Go) não sabe escolher a rede,
+        // então ele fala com um proxy local, e este (em Kotlin) fala com o compartilhador
+        // preso à rede certa.
+        val target = if (network == null) {
+            host
+        } else {
+            try {
+                val ex = Executors.newCachedThreadPool()
+                relayExecutor = ex
+                relay = ProxyServer(
+                    ex,
+                    upstream = Upstream(InetAddress.getByName(host), network, 0),
+                    loopbackOnly = true
+                ).also { it.start() }
+                AppLog.i("Proxy local ativo, encaminhando ao compartilhador $host")
+                "127.0.0.1"
+            } catch (e: Exception) {
+                AppLog.e("Não consegui iniciar o proxy local", e)
+                stopRelay()
+                return
+            }
         }
         val pfd = try {
             Builder()
@@ -68,14 +108,15 @@ class ClientVpnService : VpnService() {
         }
         if (pfd == null) {
             AppLog.e("A VPN não foi autorizada pelo sistema")
+            stopRelay()
             return
         }
         // O tun2socks passa a ser o dono do descritor e o fecha ao parar.
         val fd = pfd.detachFd()
-        val proxy = "socks5://$host:${Config.SOCKS_PORT}"
+        val proxy = "socks5://$target:${Config.SOCKS_PORT}"
         running = true
         Thread {
-            testProxy(host)
+            testProxy(target)
             try {
                 AppLog.i("Iniciando o tun2socks (fd $fd, $proxy)…")
                 bridge.Bridge.start(fd.toLong(), proxy, Config.MTU.toLong())
@@ -120,14 +161,23 @@ class ClientVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
-        if (!running) return
-        running = false
-        try {
-            bridge.Bridge.stop()
-        } catch (e: Throwable) {
-            AppLog.e("Falha ao parar o túnel", e)
+        if (running) {
+            running = false
+            try {
+                bridge.Bridge.stop()
+            } catch (e: Throwable) {
+                AppLog.e("Falha ao parar o túnel", e)
+            }
+            AppLog.i("Túnel encerrado")
         }
-        AppLog.i("Túnel encerrado")
+        stopRelay()
+    }
+
+    private fun stopRelay() {
+        relay?.stop()
+        relay = null
+        relayExecutor?.shutdownNow()
+        relayExecutor = null
     }
 
     override fun onRevoke() {

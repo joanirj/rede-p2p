@@ -2,6 +2,7 @@ package br.redep2p
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -13,8 +14,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -136,8 +139,8 @@ class MainActivity : Activity() {
             HostService.channelWarning?.let { append("\n⚠ ").append(it) }
         }
         val client = when {
-            ClientVpnService.running && HostService.repeater -> "Usar internet: pelo próprio repetidor"
-            ClientVpnService.running -> "Usar internet: conectado ao compartilhador (${ClientP2p.hostAddress})"
+            ClientVpnService.running && HostService.ownTrafficViaProxy -> "Usar internet: pelo próprio proxy deste aparelho"
+            ClientVpnService.running -> "Usar internet: conectado ao compartilhador (${ClientP2p.hostAddress}) por ${ClientP2p.path}"
             ClientP2p.connecting -> "Usar internet: procurando o compartilhador…"
             else -> "Usar internet: desligado"
         }
@@ -151,9 +154,10 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 33) {
             perms += Manifest.permission.NEARBY_WIFI_DEVICES
             perms += Manifest.permission.POST_NOTIFICATIONS
-        } else {
-            perms += Manifest.permission.ACCESS_FINE_LOCATION
         }
+        // Localização: para o Wi-Fi Direct até o Android 12 e, em todos, para ler o
+        // nome do Wi-Fi de casa e achar a versão 2,4 GHz dele.
+        perms += Manifest.permission.ACCESS_FINE_LOCATION
         return perms.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
     }
 
@@ -196,8 +200,88 @@ class MainActivity : Activity() {
             AppLog.i("Já está ${if (HostService.repeater) "repetindo" else "compartilhando"}. Para trocar, toque em \"Parar de compartilhar\" antes.")
             return
         }
+        if (action == null) {
+            val wifi = currentWifi(this)
+            if (wifi != null && wifi.frequency > 0 && !isBand24(wifi.frequency) && findDirectWifi(this) == null) {
+                prepareShare24(wifi)
+                return
+            }
+        }
         AppLog.i(if (action == HostService.ACTION_REPEAT) "Iniciando o modo repetidor…" else "Iniciando o compartilhamento…")
         startForegroundService(Intent(this, HostService::class.java).setAction(action))
+    }
+
+    /**
+     * O Wi-Fi de casa está em 5 GHz: o compartilhamento precisa ir para 2,4 GHz.
+     * Pede a senha do Wi-Fi uma vez (o Android exige) e guarda neste aparelho.
+     */
+    private fun prepareShare24(wifi: CurrentWifi) {
+        AppLog.i("Wi-Fi de casa em ${wifi.frequency} MHz (5 GHz): o compartilhamento vai usar a faixa de 2,4 GHz")
+        val known = wifi.ssid
+        val saved = known?.let { WifiPasswords.get(this, it) }
+        if (known != null && saved != null) {
+            launchShare24(known, saved)
+            return
+        }
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val ssidField = EditText(this).apply {
+            hint = "Nome do Wi-Fi"
+            setText(known ?: "")
+            isSingleLine = true
+        }
+        val passField = EditText(this).apply {
+            hint = "Senha do Wi-Fi"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            isSingleLine = true
+        }
+        if (known == null) form.addView(ssidField)
+        form.addView(passField)
+        AlertDialog.Builder(this)
+            .setTitle("Compartilhar em 2,4 GHz")
+            .setMessage(
+                "Este aparelho está no Wi-Fi ${known?.let { "\"$it\" " } ?: ""}na faixa de 5 GHz. " +
+                    "Para os outros aparelhos conseguirem se conectar, o app vai ligá-lo ao mesmo Wi-Fi na faixa de 2,4 GHz.\n\n" +
+                    "O Android exige a senha do Wi-Fi para isso. Ela fica guardada só neste aparelho."
+            )
+            .setView(form)
+            .setPositiveButton("Continuar") { _, _ ->
+                val ssid = ssidField.text.toString().trim()
+                val pass = passField.text.toString()
+                if (ssid.isEmpty() || pass.length < 8) {
+                    AppLog.e("Nome do Wi-Fi vazio ou senha com menos de 8 caracteres")
+                } else {
+                    WifiPasswords.put(this, ssid, pass)
+                    launchShare24(ssid, pass)
+                }
+            }
+            .setNeutralButton("Usar 5 GHz mesmo") { _, _ ->
+                AppLog.i("Iniciando o compartilhamento em 5 GHz (pode não funcionar com todos os aparelhos)…")
+                startForegroundService(Intent(this, HostService::class.java))
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun launchShare24(ssid: String, pass: String) {
+        val intent = Intent(this, HostService::class.java)
+            .setAction(HostService.ACTION_SHARE_24)
+            .putExtra(HostService.EXTRA_SSID, ssid)
+            .putExtra(HostService.EXTRA_PASS, pass)
+        if (Build.VERSION.SDK_INT < 31) {
+            // Android 10 e 11 não deixam escolher a faixa: escolhemos o ponto de acesso 2,4 GHz.
+            val ap = find24Bssid(this, ssid)
+            if (ap == null) {
+                AppLog.e("Não achei a versão 2,4 GHz do Wi-Fi \"$ssid\" por perto (a localização está ligada?)")
+                return
+            }
+            intent.putExtra(HostService.EXTRA_BSSID, ap.first).putExtra(HostService.EXTRA_FREQ, ap.second)
+        }
+        AppLog.i("Iniciando o compartilhamento em 2,4 GHz…")
+        startForegroundService(intent)
     }
 
     private fun stopHost() {
@@ -223,7 +307,7 @@ class MainActivity : Activity() {
 
     private fun startClient(networkName: String) {
         if (!hasWifiDirectPermission()) return
-        if (HostService.running && !(HostService.repeater && HostService.ready)) {
+        if (HostService.running && !(HostService.ownTrafficViaProxy && HostService.ready)) {
             AppLog.e("Pare o \"Compartilhar\" antes de usar a internet de outro aparelho.")
             return
         }
@@ -244,9 +328,9 @@ class MainActivity : Activity() {
 
     private fun connectClient(networkName: String) {
         val app = applicationContext
-        if (HostService.repeater && HostService.ready) {
-            // O repetidor usa o próprio proxy (que já encaminha para o aparelho de cima).
-            AppLog.i("Repetidor: usando a internet pelo próprio proxy deste aparelho")
+        if (HostService.ownTrafficViaProxy && HostService.ready) {
+            // Repetidor ou modo 2,4 GHz: este aparelho navega pelo próprio proxy.
+            AppLog.i("Usando a internet pelo próprio proxy deste aparelho")
             app.startService(
                 Intent(app, ClientVpnService::class.java)
                     .setAction(ClientVpnService.ACTION_START)
@@ -254,18 +338,18 @@ class MainActivity : Activity() {
             )
             return
         }
-        ClientP2p.connect(this, networkName) { host ->
-            app.startService(
-                Intent(app, ClientVpnService::class.java)
-                    .setAction(ClientVpnService.ACTION_START)
-                    .putExtra(ClientVpnService.EXTRA_HOST, host)
-            )
+        ClientP2p.connect(this, networkName) { host, network ->
+            val intent = Intent(app, ClientVpnService::class.java)
+                .setAction(ClientVpnService.ACTION_START)
+                .putExtra(ClientVpnService.EXTRA_HOST, host)
+            if (network != null) intent.putExtra(ClientVpnService.EXTRA_NETWORK, network)
+            app.startService(intent)
         }
     }
 
     private fun stopClient() {
         startService(Intent(this, ClientVpnService::class.java).setAction(ClientVpnService.ACTION_STOP))
-        ClientP2p.disconnect()
+        ClientP2p.disconnect(this)
         AppLog.i("Desconectado do compartilhador")
     }
 

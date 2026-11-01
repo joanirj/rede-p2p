@@ -58,15 +58,20 @@ object UpstreamLink {
         context: Context,
         onReady: (DirectWifi) -> Unit,
         onFail: (String) -> Unit,
-        onLost: () -> Unit
+        onLost: () -> Unit,
+        /** Nome exato da rede; sem ele, aceita qualquer rede DIRECT-RP-… */
+        ssid: String? = null
     ) {
         val app = context.applicationContext
         val cm = app.getSystemService(ConnectivityManager::class.java)
         release(app)
-        val spec = WifiNetworkSpecifier.Builder()
-            .setSsidPattern(PatternMatcher("DIRECT-RP-", PatternMatcher.PATTERN_PREFIX))
-            .setWpa2Passphrase(Config.PASSPHRASE)
-            .build()
+        val specBuilder = WifiNetworkSpecifier.Builder().setWpa2Passphrase(Config.PASSPHRASE)
+        if (ssid != null) {
+            specBuilder.setSsid(ssid)
+        } else {
+            specBuilder.setSsidPattern(PatternMatcher("DIRECT-RP-", PatternMatcher.PATTERN_PREFIX))
+        }
+        val spec = specBuilder.build()
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -80,8 +85,8 @@ object UpstreamLink {
                 val gw = lp.routes.firstNotNullOfOrNull { r ->
                     (r.gateway as? Inet4Address)?.takeIf { r.isDefaultRoute }
                 } ?: return
-                val b = gw.address
-                if (b[0] != 192.toByte() || b[1] != 168.toByte() || b[2] != 49.toByte()) return
+                // O nome DIRECT-RP-… já identifica a rede; o endereço do roteador pode ser
+                // qualquer um (no Android é 192.168.49.1; num PC compartilhando, outro).
                 val address = gw.hostAddress ?: return
                 reported = true
                 val wifi = DirectWifi(network, address, lp.interfaceName)
@@ -104,7 +109,7 @@ object UpstreamLink {
             }
         }
         callback = cb
-        AppLog.i("Pedindo ao Android para entrar na rede de um aparelho do app (DIRECT-RP-…). Confirme na janela que aparecer.")
+        AppLog.i("Pedindo ao Android para entrar na rede ${ssid ?: "de um aparelho do app (DIRECT-RP-…)"} como Wi-Fi comum. Confirme na janela que aparecer.")
         cm.requestNetwork(request, cb, 60_000)
     }
 

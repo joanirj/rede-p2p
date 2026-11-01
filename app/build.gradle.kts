@@ -11,8 +11,8 @@ android {
         applicationId = "br.redep2p"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.2.3"
+        versionCode = 10
+        versionName = "0.3.0"
     }
 
     // Chave de teste fixa: permite instalar uma versão nova por cima da anterior.

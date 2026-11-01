@@ -35,6 +35,13 @@ class HostService : Service() {
         /** Entra sozinho na rede de um aparelho do app e repete a internet dele. */
         const val ACTION_REPEAT = "br.redep2p.REPEAT"
 
+        /** Reconecta ao Wi-Fi de casa na faixa de 2,4 GHz e compartilha nesse canal. */
+        const val ACTION_SHARE_24 = "br.redep2p.SHARE_24"
+        const val EXTRA_SSID = "ssid"
+        const val EXTRA_PASS = "pass"
+        const val EXTRA_BSSID = "bssid"
+        const val EXTRA_FREQ = "freq"
+
         @Volatile
         var running = false
 
@@ -49,6 +56,13 @@ class HostService : Service() {
         @Volatile
         var repeater = false
 
+        /**
+         * A saída do proxy não é a rede padrão do aparelho (repetidor ou modo 2,4 GHz).
+         * Para o próprio aparelho navegar, ele usa a VPN local apontando para o próprio proxy.
+         */
+        @Volatile
+        var ownTrafficViaProxy = false
+
         /** Aviso curto para a tela quando os canais ficaram diferentes. */
         @Volatile
         var channelWarning: String? = null
@@ -61,6 +75,7 @@ class HostService : Service() {
     private var proxy: ProxyServer? = null
     private var upstreamFrequency = 0
     private var upstream: Upstream? = null
+    private var outNetwork: Network? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -79,6 +94,28 @@ class HostService : Service() {
         running = true
         Stats.reset()
         status = "Iniciando…"
+
+        if (intent?.action == ACTION_SHARE_24) {
+            val ssid = intent.getStringExtra(EXTRA_SSID)
+            val pass = intent.getStringExtra(EXTRA_PASS)
+            if (ssid == null || pass == null) {
+                fail("Falha: faltou o nome ou a senha do Wi-Fi")
+                return START_NOT_STICKY
+            }
+            status = "Conectando ao Wi-Fi de casa em 2,4 GHz…"
+            HomeLink.request(
+                this, ssid, pass,
+                bssid = intent.getStringExtra(EXTRA_BSSID),
+                knownFrequency = intent.getIntExtra(EXTRA_FREQ, 0),
+                onReady = { net, freq -> handler.post { if (running) startHome24(net, freq) } },
+                onFail = { msg ->
+                    WifiPasswords.forget(this, ssid)
+                    handler.post { fail(msg) }
+                },
+                onLost = { handler.post { if (running) fail("Falha: a conexão 2,4 GHz com o Wi-Fi de casa caiu") } }
+            )
+            return START_NOT_STICKY
+        }
 
         if (intent?.action == ACTION_REPEAT) {
             status = "Entrando na rede do aparelho de cima…"
@@ -101,6 +138,15 @@ class HostService : Service() {
         return START_NOT_STICKY
     }
 
+    /** Modo 2,4 GHz: já conectado ao Wi-Fi de casa nessa faixa; cria a rede no mesmo canal. */
+    private fun startHome24(net: Network, freq: Int) {
+        outNetwork = net
+        ownTrafficViaProxy = true
+        upstreamFrequency = if (isBand24(freq)) freq else 0
+        AppLog.i("Conectado ao Wi-Fi de casa em 2,4 GHz (${if (freq > 0) "$freq MHz" else "frequência desconhecida"})")
+        startGroup()
+    }
+
     /** Modo repetidor: descobre o aparelho de cima e então cria a própria rede. */
     private fun startRepeater(wifi: DirectWifi) {
         status = "Conectando ao aparelho de cima…"
@@ -111,6 +157,7 @@ class HostService : Service() {
                 val up = Upstream.discover(wifi)
                 upstream = up
                 repeater = true
+                ownTrafficViaProxy = true
                 AppLog.i("Aparelho de cima: ${up.hops} salto(s) da internet, endereço ${up.address.hostAddress}")
                 handler.post { if (running) startGroup() }
             } catch (e: Exception) {
@@ -270,10 +317,13 @@ class HostService : Service() {
             val ex = Executors.newCachedThreadPool()
             executor = ex
             val up = upstream
-            proxy = ProxyServer(ex, up).also { it.start() }
+            proxy = ProxyServer(ex, up, outNetwork).also { it.start() }
             ready = true
             if (up == null) {
-                status = "Compartilhando"
+                status = if (outNetwork != null) "Compartilhando (2,4 GHz)" else "Compartilhando"
+                if (outNetwork != null) {
+                    AppLog.i("Para este aparelho também navegar, toque em \"Usar internet de outro aparelho\".")
+                }
                 AppLog.i("Pronto. No outro aparelho, toque em \"Usar internet de outro aparelho\".")
             } else {
                 status = "Repetindo (${up.hops + 1} salto(s) até a internet)"
@@ -294,9 +344,12 @@ class HostService : Service() {
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
         UpstreamLink.release(this)
+        HomeLink.release(this)
+        outNetwork = null
         running = false
         ready = false
         repeater = false
+        ownTrafficViaProxy = false
         channelWarning = null
         proxy?.stop()
         proxy = null

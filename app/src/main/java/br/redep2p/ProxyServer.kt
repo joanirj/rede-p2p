@@ -6,6 +6,7 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import android.net.Network
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
@@ -33,7 +34,14 @@ import java.util.concurrent.atomic.AtomicLong
  * Sem [upstream], sai direto para a internet. Com [upstream], encaminha tudo
  * ao proxy do aparelho de cima (modo repetidor).
  */
-class ProxyServer(private val executor: ExecutorService, private val upstream: Upstream? = null) {
+class ProxyServer(
+    private val executor: ExecutorService,
+    private val upstream: Upstream? = null,
+    /** Rede de saída específica (modo 2,4 GHz). Sem ela, usa a rede padrão do aparelho. */
+    private val outNetwork: Network? = null,
+    /** Só aceita conexões do próprio aparelho (proxy local do cliente). */
+    private val loopbackOnly: Boolean = false
+) {
 
     /** Saltos até a internet: 0 no compartilhador, 1 no primeiro repetidor… */
     private val hops = upstream?.let { it.hops + 1 } ?: 0
@@ -64,8 +72,11 @@ class ProxyServer(private val executor: ExecutorService, private val upstream: U
 
     private fun listen(port: Int): ServerSocket = ServerSocket().apply {
         reuseAddress = true
-        bind(InetSocketAddress(port))
+        bind(if (loopbackOnly) InetSocketAddress(InetAddress.getLoopbackAddress(), port) else InetSocketAddress(port))
     }
+
+    private fun resolve(host: String): InetAddress =
+        outNetwork?.getByName(host) ?: InetAddress.getByName(host)
 
     private fun acceptLoop(server: ServerSocket, name: String, handler: (Socket) -> Unit) {
         while (running) {
@@ -150,7 +161,8 @@ class ProxyServer(private val executor: ExecutorService, private val upstream: U
         upstream?.let { return it.connect(host, port) }
         val remote = Socket()
         try {
-            remote.connect(InetSocketAddress(host, port), 10_000)
+            outNetwork?.bindSocket(remote)
+            remote.connect(InetSocketAddress(resolve(host), port), 10_000)
             remote.tcpNoDelay = true
             return remote
         } catch (e: IOException) {
@@ -180,10 +192,19 @@ class ProxyServer(private val executor: ExecutorService, private val upstream: U
             chainedUdpAssociate(client, input, out, up)
             return
         }
-        val udp = DatagramSocket(InetSocketAddress(0))
+        // Dois sockets: um fala com o cliente; o outro sai para a internet (pela rede de saída).
+        val local = DatagramSocket(InetSocketAddress(0))
+        val outward = DatagramSocket(InetSocketAddress(0))
+        try {
+            outNetwork?.bindSocket(outward)
+        } catch (e: Exception) {
+            AppLog.e("Não consegui prender o UDP à rede de saída", e)
+        }
         val clientIp = client.inetAddress
-        socksReply(out, 0, client.localAddress, udp.localPort)
-        val worker = executor.submit { udpLoop(udp, clientIp) }
+        val clientPort = AtomicInteger(-1)
+        socksReply(out, 0, client.localAddress, local.localPort)
+        val fromClient = executor.submit { udpFromClient(local, outward, clientIp, clientPort) }
+        val fromInternet = executor.submit { udpFromInternet(outward, local, clientIp, clientPort) }
         try {
             // A associação UDP vive enquanto a conexão TCP de controle estiver aberta.
             while (input.read() >= 0) {
@@ -191,69 +212,82 @@ class ProxyServer(private val executor: ExecutorService, private val upstream: U
             }
         } catch (ignored: IOException) {
         } finally {
-            udp.close()
-            worker.cancel(true)
+            local.close()
+            outward.close()
+            fromClient.cancel(true)
+            fromInternet.cancel(true)
         }
     }
 
-    private fun udpLoop(udp: DatagramSocket, clientIp: InetAddress) {
+    /** Do cliente: tira o cabeçalho SOCKS5 UDP e envia os dados ao destino. */
+    private fun udpFromClient(local: DatagramSocket, outward: DatagramSocket, clientIp: InetAddress, clientPort: AtomicInteger) {
         val buf = ByteArray(65535)
-        var clientPort = -1
-        while (!udp.isClosed) {
+        while (!local.isClosed) {
             val packet = DatagramPacket(buf, buf.size)
             try {
-                udp.receive(packet)
+                local.receive(packet)
             } catch (ignored: IOException) {
                 break
             }
+            if (packet.address != clientIp) continue
+            clientPort.set(packet.port)
             val len = packet.length
-            if (packet.address == clientIp) {
-                // Do cliente: cabeçalho SOCKS5 UDP + dados → envia ao destino.
-                clientPort = packet.port
-                if (len < 10 || buf[2].toInt() != 0) continue // fragmentação não suportada
-                var pos: Int
-                val dst: InetAddress = when (buf[3].toInt()) {
-                    1 -> {
-                        pos = 8
-                        InetAddress.getByAddress(buf.copyOfRange(4, 8))
-                    }
-                    3 -> {
-                        val n = buf[4].toInt() and 0xff
-                        pos = 5 + n
-                        val name = String(buf, 5, n, Charsets.US_ASCII)
-                        try {
-                            InetAddress.getByName(name)
-                        } catch (ignored: Exception) {
-                            continue
-                        }
-                    }
-                    4 -> {
-                        pos = 20
-                        InetAddress.getByAddress(buf.copyOfRange(4, 20))
-                    }
-                    else -> continue
+            if (len < 10 || buf[2].toInt() != 0) continue // fragmentação não suportada
+            var pos: Int
+            val dst: InetAddress = when (buf[3].toInt()) {
+                1 -> {
+                    pos = 8
+                    InetAddress.getByAddress(buf.copyOfRange(4, 8))
                 }
-                if (pos + 2 > len) continue
-                val port = ((buf[pos].toInt() and 0xff) shl 8) or (buf[pos + 1].toInt() and 0xff)
-                pos += 2
-                val dataLen = len - pos
-                try {
-                    udp.send(DatagramPacket(buf, pos, dataLen, dst, port))
-                    Stats.up.addAndGet(dataLen.toLong())
-                } catch (ignored: IOException) {
+                3 -> {
+                    val n = buf[4].toInt() and 0xff
+                    pos = 5 + n
+                    val name = String(buf, 5, n, Charsets.US_ASCII)
+                    try {
+                        resolve(name)
+                    } catch (ignored: Exception) {
+                        continue
+                    }
                 }
-            } else if (clientPort > 0) {
-                // Resposta da internet: acrescenta o cabeçalho e devolve ao cliente.
-                val src = packet.address
-                val atyp: Byte = if (src is Inet6Address) 4 else 1
-                val header = byteArrayOf(0, 0, 0, atyp) + src.address +
-                    byteArrayOf((packet.port shr 8).toByte(), packet.port.toByte())
-                val reply = header + buf.copyOfRange(0, len)
-                try {
-                    udp.send(DatagramPacket(reply, reply.size, clientIp, clientPort))
-                    Stats.down.addAndGet(len.toLong())
-                } catch (ignored: IOException) {
+                4 -> {
+                    pos = 20
+                    InetAddress.getByAddress(buf.copyOfRange(4, 20))
                 }
+                else -> continue
+            }
+            if (pos + 2 > len) continue
+            val port = ((buf[pos].toInt() and 0xff) shl 8) or (buf[pos + 1].toInt() and 0xff)
+            pos += 2
+            val dataLen = len - pos
+            try {
+                outward.send(DatagramPacket(buf, pos, dataLen, dst, port))
+                Stats.up.addAndGet(dataLen.toLong())
+            } catch (ignored: IOException) {
+            }
+        }
+    }
+
+    /** Da internet: acrescenta o cabeçalho SOCKS5 UDP e devolve ao cliente. */
+    private fun udpFromInternet(outward: DatagramSocket, local: DatagramSocket, clientIp: InetAddress, clientPort: AtomicInteger) {
+        val buf = ByteArray(65535)
+        while (!outward.isClosed) {
+            val packet = DatagramPacket(buf, buf.size)
+            try {
+                outward.receive(packet)
+            } catch (ignored: IOException) {
+                break
+            }
+            val port = clientPort.get()
+            if (port <= 0) continue
+            val src = packet.address
+            val atyp: Byte = if (src is Inet6Address) 4 else 1
+            val header = byteArrayOf(0, 0, 0, atyp) + src.address +
+                byteArrayOf((packet.port shr 8).toByte(), packet.port.toByte())
+            val reply = header + buf.copyOfRange(0, packet.length)
+            try {
+                local.send(DatagramPacket(reply, reply.size, clientIp, port))
+                Stats.down.addAndGet(packet.length.toLong())
+            } catch (ignored: IOException) {
             }
         }
     }
