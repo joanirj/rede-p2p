@@ -11,8 +11,8 @@ android {
         applicationId = "br.redep2p"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.1.1"
     }
 
     // Chave de teste fixa: permite instalar uma versão nova por cima da anterior.
@@ -22,12 +22,22 @@ android {
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+            // Assinatura v1 + v2: alguns instaladores de fabricantes recusam APK só com v2.
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
     buildTypes {
         getByName("debug") {
             signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    // Bibliotecas nativas compactadas: APK menor e compatível com instaladores antigos.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 
