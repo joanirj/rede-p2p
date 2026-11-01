@@ -2,10 +2,13 @@ package br.redep2p
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Handler
 import android.os.Looper
+import java.net.Inet4Address
 
 /**
  * Cliente: entra no grupo Wi-Fi Direct do compartilhador usando o nome e a senha
@@ -41,6 +44,15 @@ object ClientP2p {
         channel = ch
         connecting = true
         hostAddress = null
+
+        // Plano B: o aparelho já está na rede do compartilhador como Wi-Fi comum
+        // (conectado manualmente em Configurações → Wi-Fi).
+        val legacy = legacyGateway(app)
+        if (legacy != null) {
+            AppLog.i("Este aparelho está na rede do compartilhador como Wi-Fi comum")
+            ready(legacy, onReady)
+            return
+        }
 
         // Se já estiver num grupo, usa a conexão existente.
         m.requestConnectionInfo(ch) { info ->
@@ -83,10 +95,30 @@ object ClientP2p {
                 handler.postDelayed({ poll(m, ch, onReady, attempt + 1) }, 1000)
             } else {
                 connecting = false
-                AppLog.e("Não encontrei o compartilhador em 40 s. Ele está com \"Compartilhar internet\" ligado e perto deste aparelho?")
+                AppLog.e("Não encontrei o compartilhador em 40 s pelo Wi-Fi Direct.")
+                AppLog.i("Plano B: em Configurações → Wi-Fi, conecte à rede ${Config.NETWORK_NAME} (senha ${Config.PASSPHRASE}), volte aqui e toque de novo em \"Usar internet de outro aparelho\".")
                 m.cancelConnect(ch, null)
             }
         }
+    }
+
+    /** Gateway 192.168.49.x de uma rede Wi-Fi comum, se o aparelho estiver nela. */
+    @Suppress("DEPRECATION")
+    private fun legacyGateway(context: Context): String? {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+            val lp = cm.getLinkProperties(network) ?: continue
+            for (route in lp.routes) {
+                val gw = route.gateway as? Inet4Address ?: continue
+                val b = gw.address
+                if (route.isDefaultRoute && b[0] == 192.toByte() && b[1] == 168.toByte() && b[2] == 49.toByte()) {
+                    return gw.hostAddress
+                }
+            }
+        }
+        return null
     }
 
     private fun ready(address: String, onReady: (String) -> Unit) {
