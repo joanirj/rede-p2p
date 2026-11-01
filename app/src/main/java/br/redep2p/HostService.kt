@@ -40,6 +40,7 @@ class HostService : Service() {
     private var channel: WifiP2pManager.Channel? = null
     private var executor: ExecutorService? = null
     private var proxy: ProxyServer? = null
+    private var upstreamFrequency = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -89,6 +90,7 @@ class HostService : Service() {
                 else -> {
                     val wifi = applicationContext.getSystemService(WifiManager::class.java)
                     val freq = wifi.connectionInfo?.frequency ?: 0
+                    upstreamFrequency = if (freq in 2400..5900) freq else 0
                     AppLog.i("Saída: Wi-Fi comum, frequência $freq MHz, ${caps.linkDownstreamBandwidthKbps / 1000} Mbps estimados")
                 }
             }
@@ -121,22 +123,46 @@ class HostService : Service() {
         })
     }
 
+    /**
+     * Tentativas, da melhor para a mais compatível:
+     * 0 = mesmo canal do Wi-Fi de casa (o rádio não precisa alternar entre canais);
+     * 1 = faixa de 2,4 GHz; 2 = o sistema escolhe.
+     */
     @SuppressLint("MissingPermission")
-    private fun createGroup(m: WifiP2pManager, ch: WifiP2pManager.Channel) {
-        val config = WifiP2pConfig.Builder()
+    private fun createGroup(m: WifiP2pManager, ch: WifiP2pManager.Channel, attempt: Int = 0) {
+        if (!running) return
+        val builder = WifiP2pConfig.Builder()
             .setNetworkName(Config.NETWORK_NAME)
             .setPassphrase(Config.PASSPHRASE)
-            .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
             .enablePersistentMode(false)
-            .build()
-        m.createGroup(ch, config, object : WifiP2pManager.ActionListener {
+        val description = when {
+            attempt == 0 && upstreamFrequency > 0 -> {
+                builder.setGroupOperatingFrequency(upstreamFrequency)
+                "no mesmo canal do Wi-Fi de casa ($upstreamFrequency MHz)"
+            }
+            attempt <= 1 -> {
+                builder.setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
+                "na faixa de 2,4 GHz"
+            }
+            else -> {
+                builder.setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_AUTO)
+                "na faixa escolhida pelo sistema"
+            }
+        }
+        AppLog.i("Criando a rede Wi-Fi Direct $description…")
+        m.createGroup(ch, builder.build(), object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 AppLog.i("Grupo Wi-Fi Direct criado")
                 handler.postDelayed({ checkGroup(m, ch, 0) }, 1000)
             }
 
             override fun onFailure(reason: Int) {
-                fail("Falha ao criar o grupo Wi-Fi Direct: ${p2pReason(reason)}")
+                if (attempt < 2) {
+                    AppLog.i("Não deu ${description}: ${p2pReason(reason)}. Tentando outra opção…")
+                    handler.postDelayed({ createGroup(m, ch, attempt + 1) }, 1000)
+                } else {
+                    fail("Falha ao criar o grupo Wi-Fi Direct: ${p2pReason(reason)}")
+                }
             }
         })
     }

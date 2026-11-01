@@ -45,7 +45,7 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
         }
         root.addView(TextView(this).apply {
-            text = "Rede P2P · versão de teste 0.1.2"
+            text = "Rede P2P · versão de teste 0.1.3"
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
         })
