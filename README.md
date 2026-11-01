@@ -24,8 +24,9 @@ No Android 10, deixe a **localização** ligada: o sistema exige isso para o Wi-
 ## Como testar o repetidor (3 aparelhos)
 
 1. **Compartilhador:** no Wi-Fi de casa, toque em **Compartilhar internet**.
-2. **Repetidor:** em Configurações → Wi-Fi, conecte à rede `DIRECT-RP-RedeP2P` (senha `redep2p123`).
-   Depois, no app, toque em **Compartilhar internet**. O status deve mostrar "Repetindo (2 salto(s) até a internet)".
+2. **Repetidor:** toque em **Repetir internet de outro aparelho** e confirme a rede `DIRECT-RP-RedeP2P`
+   na janela do Android. O status deve mostrar "Repetindo (2 salto(s) até a internet)".
+   Para o repetidor também navegar, toque depois em **Usar internet de outro aparelho**.
 3. **Cliente da ponta:** toque em **Usar internet de um repetidor**.
 
 Todo dono de grupo Wi-Fi Direct no Android tem o endereço 192.168.49.1. Por isso o repetidor fala com o

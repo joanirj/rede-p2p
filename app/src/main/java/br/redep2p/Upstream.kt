@@ -2,8 +2,12 @@ package br.redep2p
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiNetworkSpecifier
+import android.os.PatternMatcher
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.IOException
@@ -36,6 +40,83 @@ fun findDirectWifi(context: Context): DirectWifi? {
         }
     }
     return null
+}
+
+/**
+ * Conexão do repetidor à rede do aparelho de cima, feita pelo próprio app
+ * (sem a pessoa ir às configurações de Wi-Fi). O Android mostra uma janela
+ * "Conectar a DIRECT-RP-…?" e basta um toque.
+ */
+object UpstreamLink {
+    private var callback: ConnectivityManager.NetworkCallback? = null
+
+    @Volatile
+    var current: DirectWifi? = null
+        private set
+
+    fun request(
+        context: Context,
+        onReady: (DirectWifi) -> Unit,
+        onFail: (String) -> Unit,
+        onLost: () -> Unit
+    ) {
+        val app = context.applicationContext
+        val cm = app.getSystemService(ConnectivityManager::class.java)
+        release(app)
+        val spec = WifiNetworkSpecifier.Builder()
+            .setSsidPattern(PatternMatcher("DIRECT-RP-", PatternMatcher.PATTERN_PREFIX))
+            .setWpa2Passphrase(Config.PASSPHRASE)
+            .build()
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(spec)
+            .build()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            private var reported = false
+
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
+                if (reported) return
+                val gw = lp.routes.firstNotNullOfOrNull { r ->
+                    (r.gateway as? Inet4Address)?.takeIf { r.isDefaultRoute }
+                } ?: return
+                val b = gw.address
+                if (b[0] != 192.toByte() || b[1] != 168.toByte() || b[2] != 49.toByte()) return
+                val address = gw.hostAddress ?: return
+                reported = true
+                val wifi = DirectWifi(network, address, lp.interfaceName)
+                current = wifi
+                AppLog.i("Conectado à rede do aparelho de cima (${lp.interfaceName})")
+                onReady(wifi)
+            }
+
+            override fun onUnavailable() {
+                callback = null
+                onFail("Não conectei à rede de nenhum aparelho do app (pedido recusado ou rede fora de alcance)")
+            }
+
+            override fun onLost(network: Network) {
+                if (current?.network == network) {
+                    current = null
+                    AppLog.e("A conexão com a rede do aparelho de cima caiu")
+                    onLost()
+                }
+            }
+        }
+        callback = cb
+        AppLog.i("Pedindo ao Android para entrar na rede de um aparelho do app (DIRECT-RP-…). Confirme na janela que aparecer.")
+        cm.requestNetwork(request, cb, 60_000)
+    }
+
+    fun release(context: Context) {
+        val cb = callback ?: return
+        callback = null
+        current = null
+        try {
+            context.getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(cb)
+        } catch (ignored: Exception) {
+        }
+    }
 }
 
 /**

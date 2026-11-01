@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pConfig
@@ -30,6 +31,9 @@ class HostService : Service() {
 
     companion object {
         const val ACTION_STOP = "br.redep2p.STOP_HOST"
+
+        /** Entra sozinho na rede de um aparelho do app e repete a internet dele. */
+        const val ACTION_REPEAT = "br.redep2p.REPEAT"
 
         @Volatile
         var running = false
@@ -71,27 +75,45 @@ class HostService : Service() {
         running = true
         Stats.reset()
         status = "Iniciando…"
-        logUpstream()
+
+        if (intent?.action == ACTION_REPEAT) {
+            status = "Entrando na rede do aparelho de cima…"
+            UpstreamLink.request(
+                this,
+                onReady = { wifi -> handler.post { if (running) startRepeater(wifi) } },
+                onFail = { msg -> handler.post { fail(msg) } },
+                onLost = { handler.post { if (running) fail("Falha: a conexão com o aparelho de cima caiu") } }
+            )
+            return START_NOT_STICKY
+        }
+
         val direct = findDirectWifi(this)
         if (direct == null) {
+            logUpstream(null)
             startGroup()
         } else {
-            status = "Conectando ao aparelho de cima…"
-            AppLog.i("Este aparelho está na rede de outro aparelho do app: modo repetidor")
-            Thread {
-                try {
-                    val up = Upstream.discover(direct)
-                    upstream = up
-                    repeater = true
-                    AppLog.i("Aparelho de cima: ${up.hops} salto(s) da internet, endereço ${up.address.hostAddress}")
-                    handler.post { if (running) startGroup() }
-                } catch (e: Exception) {
-                    AppLog.e("Não consegui falar com o aparelho de cima", e)
-                    handler.post { fail("Falha no modo repetidor") }
-                }
-            }.start()
+            startRepeater(direct)
         }
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    /** Modo repetidor: descobre o aparelho de cima e então cria a própria rede. */
+    private fun startRepeater(wifi: DirectWifi) {
+        status = "Conectando ao aparelho de cima…"
+        AppLog.i("Este aparelho está na rede de outro aparelho do app: modo repetidor")
+        logUpstream(wifi.network)
+        Thread {
+            try {
+                val up = Upstream.discover(wifi)
+                upstream = up
+                repeater = true
+                AppLog.i("Aparelho de cima: ${up.hops} salto(s) da internet, endereço ${up.address.hostAddress}")
+                handler.post { if (running) startGroup() }
+            } catch (e: Exception) {
+                AppLog.e("Não consegui falar com o aparelho de cima", e)
+                handler.post { fail("Falha no modo repetidor") }
+            }
+        }.start()
     }
 
     private fun startInForeground() {
@@ -114,10 +136,10 @@ class HostService : Service() {
 
     /** Registra como está a rede de saída (Wi-Fi comum), útil para diagnóstico. */
     @Suppress("DEPRECATION")
-    private fun logUpstream() {
+    private fun logUpstream(network: Network?) {
         try {
             val cm = getSystemService(ConnectivityManager::class.java)
-            val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+            val caps = cm.getNetworkCapabilities(network ?: cm.activeNetwork)
             when {
                 caps == null -> AppLog.e("Este aparelho está sem internet. Conecte-o a um Wi-Fi antes de compartilhar.")
                 !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ->
@@ -248,6 +270,7 @@ class HostService : Service() {
 
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
+        UpstreamLink.release(this)
         running = false
         ready = false
         repeater = false

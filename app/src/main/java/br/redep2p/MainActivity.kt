@@ -57,13 +57,13 @@ class MainActivity : Activity() {
         }
         root.addView(statusView)
 
-        root.addView(section("Este aparelho tem Wi-Fi com internet (ou vai repetir)"))
-        root.addView(button("Compartilhar internet") { startHost() })
+        root.addView(section("Este aparelho tem Wi-Fi com internet"))
+        root.addView(button("Compartilhar internet") { startHost(null) })
         root.addView(button("Parar de compartilhar") { stopHost() })
-        root.addView(hint(
-            "Para repetir: em Configurações → Wi-Fi, conecte este aparelho à rede " +
-                "${Config.NETWORK_NAME} (senha ${Config.PASSPHRASE}) e depois toque em \"Compartilhar internet\"."
-        ))
+
+        root.addView(section("Este aparelho vai repassar a internet de outro"))
+        root.addView(button("Repetir internet de outro aparelho") { startHost(HostService.ACTION_REPEAT) })
+        root.addView(hint("O Android vai perguntar a qual rede conectar: escolha DIRECT-RP-RedeP2P (ou outro DIRECT-RP-…). Para parar, use \"Parar de compartilhar\"."))
 
         root.addView(section("Este aparelho está sem internet"))
         root.addView(button("Usar internet de outro aparelho") { startClient(Config.NETWORK_NAME) })
@@ -185,14 +185,18 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------- compartilhar
 
-    private fun startHost() {
+    private fun startHost(action: String?) {
         if (!hasWifiDirectPermission()) return
         if (ClientVpnService.running || ClientP2p.connecting) {
             AppLog.e("Pare o \"Usar internet\" antes de compartilhar neste aparelho. Para repetir, conecte-o à rede ${Config.NETWORK_NAME} em Configurações → Wi-Fi.")
             return
         }
-        AppLog.i("Iniciando o compartilhamento…")
-        startForegroundService(Intent(this, HostService::class.java))
+        if (HostService.running) {
+            AppLog.i("Já está ${if (HostService.repeater) "repetindo" else "compartilhando"}. Para trocar, toque em \"Parar de compartilhar\" antes.")
+            return
+        }
+        AppLog.i(if (action == HostService.ACTION_REPEAT) "Iniciando o modo repetidor…" else "Iniciando o compartilhamento…")
+        startForegroundService(Intent(this, HostService::class.java).setAction(action))
     }
 
     private fun stopHost() {
