@@ -42,6 +42,11 @@ class HostService : Service() {
     private var proxy: ProxyServer? = null
     private var upstreamFrequency = 0
 
+    override fun onCreate() {
+        super.onCreate()
+        AppLog.init(applicationContext)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -38,6 +39,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLog.init(applicationContext)
         val pad = (16 * resources.displayMetrics.density).toInt()
 
         val root = LinearLayout(this).apply {
@@ -45,7 +47,7 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
         }
         root.addView(TextView(this).apply {
-            text = "Rede P2P · versão de teste 0.1.3"
+            text = "Rede P2P · versão de teste ${BuildInfo.VERSION}"
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
         })
@@ -64,7 +66,9 @@ class MainActivity : Activity() {
         root.addView(button("Parar de usar") { stopClient() })
 
         root.addView(section("Registro (log)"))
+        root.addView(button("Enviar log ao Claude (abre o GitHub)") { sendLogToGitHub() })
         root.addView(button("Copiar log") { copyLog() })
+        root.addView(button("Limpar log") { AppLog.clear() })
         logView = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 11f
@@ -81,7 +85,7 @@ class MainActivity : Activity() {
         AppLog.listener = { runOnUiThread { logView.text = AppLog.text() } }
         logView.text = AppLog.text()
         if (savedInstanceState == null) {
-            AppLog.i("App aberto · ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            AppLog.i("App aberto · versão ${BuildInfo.VERSION} · ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         }
         requestNeededPermissions()
     }
@@ -236,6 +240,30 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------- log
+
+    /**
+     * Abre a página "nova issue" do repositório já preenchida com o log.
+     * A pessoa só confirma; o Claude lê a issue pelo GitHub.
+     * Precisa de internet: use depois de voltar ao Wi-Fi de casa (o log fica salvo).
+     */
+    private fun sendLogToGitHub() {
+        val device = "${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}"
+        val full = AppLog.text()
+        // URLs muito longas são recusadas; mandamos o final do log.
+        val maxChars = 5500
+        val tail = if (full.length > maxChars) "(início cortado)\n" + full.takeLast(maxChars) else full
+        val title = "Log · $device"
+        val body = "Versão: ${BuildInfo.VERSION}\nAparelho: $device\n\n```\n$tail\n```"
+        val url = "https://github.com/joanirj/rede-p2p/issues/new?title=" +
+            Uri.encode(title) + "&body=" + Uri.encode(body)
+        copyLog()
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            AppLog.i("Página do GitHub aberta. Toque em \"Submit new issue\" para enviar.")
+        } catch (e: Exception) {
+            AppLog.e("Não consegui abrir o navegador. O log foi copiado: cole na conversa.", e)
+        }
+    }
 
     private fun copyLog() {
         val cm = getSystemService(ClipboardManager::class.java)

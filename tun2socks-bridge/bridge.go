@@ -27,7 +27,7 @@ func Start(fd int, proxy string, mtu int) error {
 		Device:   fmt.Sprintf("fd://%d", fd),
 		Proxy:    proxy,
 		MTU:      mtu,
-		LogLevel: "warning",
+		LogLevel: "info",
 	})
 	engine.Start()
 	running = true
