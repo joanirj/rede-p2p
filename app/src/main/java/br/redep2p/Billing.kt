@@ -38,7 +38,10 @@ object Pricing {
     const val PRICE_MILLI_PER_MB = 1_000L
     const val MAX_ACCEPTED_PRICE_MILLI_PER_MB = 5_000L
     const val BILL_STEP_BYTES = MB
-    const val UNPAID_LIMIT_BYTES = 2 * MB
+    /** Tolerância de bytes em aberto: inclui o que está "em trânsito" nos buffers do Wi-Fi. */
+    const val UNPAID_LIMIT_BYTES = 4 * MB
+    /** Reenvia a conta se houver saldo em aberto e nenhum recibo recente. */
+    const val REBILL_INTERVAL_MS = 5_000L
     const val INITIAL_BALANCE_MILLI = 100_000L
     const val TEST_TOPUP_MILLI = 100_000L
 
@@ -152,6 +155,7 @@ class BillingServer(private val executor: ExecutorService, private val meter: Tr
         @Volatile var paidAmount = 0L
         @Volatile var seq = 0L
         @Volatile var billedBytes = 0L
+        @Volatile var lastBillAt = 0L
         @Volatile var warnedBlocked = false
     }
 
@@ -189,7 +193,7 @@ class BillingServer(private val executor: ExecutorService, private val meter: Tr
         val ok = unpaid <= Pricing.UNPAID_LIMIT_BYTES
         if (!ok && s != null && !s.warnedBlocked) {
             s.warnedBlocked = true
-            AppLog.i("Cliente ${Identity.shortId(s.client)} passou de 2 MB sem pagar: tráfego bloqueado até chegar um recibo")
+            AppLog.i("Cliente ${Identity.shortId(s.client)} passou de ${Pricing.megabytes(Pricing.UNPAID_LIMIT_BYTES)} sem pagar: tráfego bloqueado até chegar um recibo")
         }
         return ok
     }
@@ -291,10 +295,14 @@ class BillingServer(private val executor: ExecutorService, private val meter: Tr
             } catch (e: InterruptedException) {
                 break
             }
+            val now = System.currentTimeMillis()
             for (s in sessions.values) {
                 val usedNow = meter.used(s.ip) - s.baseUsed
-                if (usedNow - s.billedBytes >= Pricing.BILL_STEP_BYTES) {
+                val stepReached = usedNow - s.billedBytes >= Pricing.BILL_STEP_BYTES
+                val tailOpen = usedNow > s.paidBytes + 65_536 && now - s.lastBillAt >= Pricing.REBILL_INTERVAL_MS
+                if (stepReached || tailOpen) {
                     s.billedBytes = usedNow
+                    s.lastBillAt = now
                     try {
                         JSONObject()
                             .put("t", "bill")
@@ -386,35 +394,37 @@ class BillingClient(
                 val bytes = msg.getLong("bytes")
                 val amount = msg.getLong("amount")
                 val measured = measure() - baseline
-                // Tolerância: o compartilhador conta cabeçalhos que o túnel não conta, e as medições não são simultâneas.
-                if (bytes > measured + measured / 10 + 256 * 1024) {
-                    AppLog.e("Conta acima do medido: compartilhador diz ${Pricing.megabytes(bytes)}, medi ${Pricing.megabytes(measured)}")
-                    JSONObject().put("t", "dispute").put("reason", "medido ${measured}, cobrado $bytes").send(writer)
+                if (amount != Pricing.priceFor(bytes, price)) {
+                    JSONObject().put("t", "dispute").put("reason", "valor não confere com o preço").send(writer)
                     continue
                 }
-                if (amount != Pricing.priceFor(bytes, price) || bytes < paidBytes) {
-                    JSONObject().put("t", "dispute").put("reason", "valor não confere").send(writer)
-                    continue
+                // O compartilhador conta ao enviar; este aparelho, ao receber. A diferença é o que
+                // ainda está em trânsito. O cliente paga só o que já recebeu (no máximo o cobrado).
+                val payBytes = minOf(bytes, measured)
+                if (payBytes <= paidBytes) continue
+                if (bytes > measured + Pricing.UNPAID_LIMIT_BYTES) {
+                    AppLog.i("Conta bem acima do medido: compartilhador diz ${Pricing.megabytes(bytes)}, recebi ${Pricing.megabytes(measured)}")
                 }
-                val delta = amount - paidAmount
+                val payAmount = Pricing.priceFor(payBytes, price)
+                val delta = payAmount - paidAmount
                 if (!Ledger.debit(delta)) {
                     AppLog.e("Saldo insuficiente para pagar ${Pricing.credits(delta)} créditos. Use \"Recarregar saldo de teste\".")
                     JSONObject().put("t", "low_balance").send(writer)
                     continue
                 }
                 seq++
-                val sig = Identity.sign(Receipts.receiptHash(session, hostKey, Identity.publicKey, seq, bytes, amount))
+                val sig = Identity.sign(Receipts.receiptHash(session, hostKey, Identity.publicKey, seq, payBytes, payAmount))
                 JSONObject()
                     .put("t", "receipt")
                     .put("seq", seq)
-                    .put("bytes", bytes)
-                    .put("amount", amount)
+                    .put("bytes", payBytes)
+                    .put("amount", payAmount)
                     .put("sig", Schnorr.hex(sig))
                     .send(writer)
-                paidAmount = amount
-                paidBytes = bytes
+                paidAmount = payAmount
+                paidBytes = payBytes
                 BillingState.clientSummary =
-                    "Pagando ao compartilhador $hostId: ${Pricing.megabytes(bytes)}, ${Pricing.credits(amount)} créditos"
+                    "Pagando ao compartilhador $hostId: ${Pricing.megabytes(payBytes)}, ${Pricing.credits(payAmount)} créditos"
             }
         } catch (e: Exception) {
             if (!stopped) AppLog.e("Cobrança encerrada", e)
