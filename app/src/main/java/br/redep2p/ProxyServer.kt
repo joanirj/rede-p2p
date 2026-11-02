@@ -74,7 +74,7 @@ class ProxyServer(
 
     private fun listen(port: Int): ServerSocket = ServerSocket().apply {
         reuseAddress = true
-        bind(if (loopbackOnly) InetSocketAddress(InetAddress.getLoopbackAddress(), port) else InetSocketAddress(port))
+        bind(if (loopbackOnly) InetSocketAddress(InetAddress.getByName("127.0.0.1"), port) else InetSocketAddress(port))
     }
 
     private fun resolve(host: String): InetAddress =
