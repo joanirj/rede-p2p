@@ -45,6 +45,11 @@ class ProxyServer(
     private val meter: TrafficMeter? = null
 ) {
 
+    private companion object {
+        const val SEND_BUFFER_BYTES = 128 * 1024
+        const val PAYMENT_WAIT_MS = 15_000L
+    }
+
     /** Saltos até a internet: 0 no compartilhador, 1 no primeiro repetidor… */
     private val hops = upstream?.let { it.hops + 1 } ?: 0
 
@@ -94,10 +99,13 @@ class ProxyServer(
                 continue
             }
             val billedIp = billedIp(client.inetAddress)
-            if (billedIp != null && meter?.allowed(billedIp) == false) {
-                // Passou do limite sem pagar: recusa até chegar um recibo.
-                client.closeQuietly()
-                continue
+            if (billedIp != null) {
+                // Fila de envio curta: o que é contado como "enviado" fica perto do que o
+                // cliente realmente recebeu (sem isso, o Android guarda MBs na fila).
+                try {
+                    client.sendBufferSize = SEND_BUFFER_BYTES
+                } catch (ignored: Exception) {
+                }
             }
             executor.execute {
                 Stats.active.incrementAndGet()
@@ -532,6 +540,11 @@ class ProxyServer(
     /** Copia nos dois sentidos até as duas pontas encerrarem. */
     private fun relay(clientIn: InputStream, client: Socket, remote: Socket) {
         val ip = billedIp(client.inetAddress)
+        if (ip != null && meter?.allowed(ip) == false && !waitForPayment(ip)) {
+            client.closeQuietly()
+            remote.closeQuietly()
+            return
+        }
         val upTask = executor.submit {
             copy(clientIn, remote.getOutputStream(), Stats.up, ip)
             try {
@@ -552,6 +565,21 @@ class ProxyServer(
         remote.closeQuietly()
     }
 
+    /** Pausa a conexão até o cliente pagar; desiste depois de [PAYMENT_WAIT_MS]. */
+    private fun waitForPayment(ip: String): Boolean {
+        val m = meter ?: return true
+        val deadline = System.currentTimeMillis() + PAYMENT_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                return false
+            }
+            if (m.allowed(ip)) return true
+        }
+        return false
+    }
+
     private fun copy(input: InputStream, output: OutputStream, counter: AtomicLong, ip: String?) {
         val buf = ByteArray(16 * 1024)
         try {
@@ -563,7 +591,7 @@ class ProxyServer(
                 counter.addAndGet(n.toLong())
                 if (ip != null && meter != null) {
                     meter.add(ip, n.toLong())
-                    if (!meter.allowed(ip)) break // sem pagamento: encerra a conexão
+                    if (!meter.allowed(ip) && !waitForPayment(ip)) break
                 }
             }
         } catch (ignored: IOException) {

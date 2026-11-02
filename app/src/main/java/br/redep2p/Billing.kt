@@ -280,11 +280,18 @@ class BillingServer(private val executor: ExecutorService, private val meter: Tr
             return
         }
         val delta = amount - s.paidAmount
+        val previousBytes = s.paidBytes
         s.seq = seq
         s.paidBytes = bytes
         s.paidAmount = amount
         s.warnedBlocked = false
         Ledger.credit(delta)
+        if (bytes / (5 * Pricing.MB) > previousBytes / (5 * Pricing.MB)) {
+            AppLog.i(
+                "Cliente ${Identity.shortId(s.client)}: ${Pricing.megabytes(bytes)} pagos (${Pricing.credits(amount)} créditos), " +
+                    "recibo nº $seq, em aberto ${Pricing.megabytes(usedNow - bytes)}"
+            )
+        }
         refreshSummary()
     }
 
@@ -421,6 +428,12 @@ class BillingClient(
                     .put("amount", payAmount)
                     .put("sig", Schnorr.hex(sig))
                     .send(writer)
+                if (payBytes / (5 * Pricing.MB) > paidBytes / (5 * Pricing.MB)) {
+                    AppLog.i(
+                        "Pago ao compartilhador $hostId: ${Pricing.megabytes(payBytes)} (${Pricing.credits(payAmount)} créditos). " +
+                            "Cobrado ${Pricing.megabytes(bytes)}, medido aqui ${Pricing.megabytes(measured)}"
+                    )
+                }
                 paidAmount = payAmount
                 paidBytes = payBytes
                 BillingState.clientSummary =
