@@ -14,6 +14,7 @@ import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -108,17 +109,18 @@ class HostService : Service() {
                 return START_NOT_STICKY
             }
             status = "Conectando ao Wi-Fi de casa em 2,4 GHz…"
-            HomeLink.request(
-                this, ssid, pass,
-                bssid = intent.getStringExtra(EXTRA_BSSID),
-                knownFrequency = intent.getIntExtra(EXTRA_FREQ, 0),
-                onReady = { net, freq -> handler.post { if (running) startHome24(net, freq) } },
-                onFail = { msg ->
-                    WifiPasswords.forget(this, ssid)
-                    handler.post { fail(msg) }
-                },
-                onLost = { handler.post { if (running) fail("Falha: a conexão 2,4 GHz com o Wi-Fi de casa caiu") } }
-            )
+            AppLog.i("Pontos de acesso \"$ssid\" vistos: ${scanSummary(this, ssid)}")
+            // Tentativas: pela faixa (Android 12+) e pelo ponto de acesso 2,4 GHz exato.
+            val attempts = mutableListOf<Pair<String?, Int>>()
+            if (Build.VERSION.SDK_INT >= 31) attempts += null to 0
+            val ap = intent.getStringExtra(EXTRA_BSSID)?.let { it to intent.getIntExtra(EXTRA_FREQ, 0) }
+                ?: find24Bssid(this, ssid)
+            if (ap != null) attempts += ap.first to ap.second
+            if (attempts.isEmpty()) {
+                fail("Falha: não achei a versão 2,4 GHz do Wi-Fi \"$ssid\" por perto (a localização está ligada?)")
+                return START_NOT_STICKY
+            }
+            tryHome24(ssid, pass, attempts, 0)
             return START_NOT_STICKY
         }
 
@@ -141,6 +143,31 @@ class HostService : Service() {
             startRepeater(direct)
         }
         return START_NOT_STICKY
+    }
+
+    private fun tryHome24(ssid: String, pass: String, attempts: List<Pair<String?, Int>>, index: Int) {
+        val (bssid, freq) = attempts[index]
+        HomeLink.request(
+            this, ssid, pass,
+            bssid = bssid,
+            knownFrequency = freq,
+            onReady = { net, f -> handler.post { if (running) startHome24(net, f) } },
+            onFail = { msg, immediate ->
+                handler.post {
+                    if (!running) return@post
+                    AppLog.e(msg)
+                    if (index + 1 < attempts.size) {
+                        AppLog.i("Tentando outro formato de pedido…")
+                        tryHome24(ssid, pass, attempts, index + 1)
+                    } else {
+                        // Só apaga a senha salva se o Android chegou a tentar conectar.
+                        if (!immediate) WifiPasswords.forget(this, ssid)
+                        fail("Falha: não consegui ligar este aparelho ao Wi-Fi \"$ssid\" em 2,4 GHz")
+                    }
+                }
+            },
+            onLost = { handler.post { if (running) fail("Falha: a conexão 2,4 GHz com o Wi-Fi de casa caiu") } }
+        )
     }
 
     /** Modo 2,4 GHz: já conectado ao Wi-Fi de casa nessa faixa; cria a rede no mesmo canal. */

@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** Versão exibida no app e enviada com o log. */
 object BuildInfo {
-    const val VERSION = "0.4.0"
+    const val VERSION = "0.4.1"
 }
 
 /** Parâmetros fixos da versão de teste. */

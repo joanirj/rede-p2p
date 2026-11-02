@@ -293,13 +293,8 @@ class MainActivity : Activity() {
             .setAction(HostService.ACTION_SHARE_24)
             .putExtra(HostService.EXTRA_SSID, ssid)
             .putExtra(HostService.EXTRA_PASS, pass)
-        if (Build.VERSION.SDK_INT < 31) {
-            // Android 10 e 11 não deixam escolher a faixa: escolhemos o ponto de acesso 2,4 GHz.
-            val ap = find24Bssid(this, ssid)
-            if (ap == null) {
-                AppLog.e("Não achei a versão 2,4 GHz do Wi-Fi \"$ssid\" por perto (a localização está ligada?)")
-                return
-            }
+        // Ponto de acesso 2,4 GHz exato (o serviço também tenta "qualquer um em 2,4 GHz" no Android 12+).
+        find24Bssid(this, ssid)?.let { ap ->
             intent.putExtra(HostService.EXTRA_BSSID, ap.first).putExtra(HostService.EXTRA_FREQ, ap.second)
         }
         AppLog.i("Iniciando o compartilhamento em 2,4 GHz…")
