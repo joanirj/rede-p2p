@@ -59,7 +59,21 @@
     <div class="muted">Usa a internet de um compartilhador por perto e mede até onde a rede alcança. <span id="ver"></span></div>
   </header>
 
+  <section class="card" aria-label="Compartilhar">
+    <h2>Compartilhar a internet deste notebook</h2>
+    <p class="muted" style="margin-top:0">O notebook liga o Hotspot Móvel do Windows com o nome <b>DIRECT-RP-Notebook</b> e passa a atender celulares e tablets com o app, recebendo créditos.</p>
+    <div class="row">
+      <span id="shareState" class="pill off">Parado</span>
+      <button id="btnShare" class="primary">Compartilhar internet</button>
+      <button id="btnShareStop">Parar de compartilhar</button>
+    </div>
+    <div id="shareMsg" class="muted" style="margin-top:8px"></div>
+    <div id="shareInfo" class="status"></div>
+    <div id="clients" class="muted"></div>
+  </section>
+
   <section class="card" aria-label="Conexão">
+    <h2>Usar a internet de outro aparelho</h2>
     <div class="row">
       <span id="state" class="pill off">Desconectado</span>
       <button id="btnConnect" class="primary">Conectar à Rede P2P</button>
@@ -74,6 +88,7 @@
       <div><b>Tráfego pela rede</b><span id="traffic" class="num">—</span></div>
       <div><b>Identidade</b><span id="ident" class="num">—</span></div>
     </div>
+    <div id="origin" style="font-weight:600"></div>
     <div id="billing" class="muted"></div>
     <div id="wifiNote" class="muted"></div>
   </section>
@@ -90,7 +105,7 @@
     <div class="summary" id="summary"></div>
     <div class="scroll" style="margin-top:12px">
       <table>
-        <thead><tr><th>Cenário</th><th class="n">Distância</th><th class="n">Sinal</th><th class="n">Latência</th><th class="n">Velocidade</th><th>Qualidade</th></tr></thead>
+        <thead><tr><th>Cenário</th><th class="n">Distância</th><th class="n">Sinal</th><th class="n">Latência</th><th class="n">Velocidade</th><th>Qualidade</th><th>Origem</th></tr></thead>
         <tbody id="results"></tbody>
       </table>
     </div>
@@ -226,7 +241,8 @@ function renderScenario() {
   }
   const [cls, label] = quality(lastResult);
   $("res").innerHTML = lastResult.ok
-    ? `<span class="q ${cls}">${label}</span> · sinal ${fmtSignal(lastResult.signal)} · latência ${lastResult.latencyMs} ms · ${lastResult.mbps.toFixed(1)} Mbps`
+    ? `<span class="q ${cls}">${label}</span> · sinal ${fmtSignal(lastResult.signal)} · latência ${lastResult.latencyMs} ms · ${lastResult.mbps.toFixed(1)} Mbps · origem: ${originLabel(lastResult)}`
+      + (lastResult.origin && lastResult.origin.startsWith("NÃO") ? `<div class="q sem">${lastResult.origin}. Esta medição não vale: reconecte e meça de novo.</div>` : "")
     : `<span class="q sem">Sem conexão neste ponto.</span> Meça de novo; se continuar sem conexão, este é o limite.`;
   if (lastResult.ok) {
     add("Próximo ponto", "primary", () => { stepIdx++; lastResult = null; render(); });
@@ -252,6 +268,12 @@ async function measure(d) {
 }
 
 const fmtSignal = (s) => (s >= 0 ? s + "%" : "—");
+function originLabel(m) {
+  if (!m.origin || m.origin === "—") return "—";
+  if (m.origin === "confirmada") return '<span class="q video">Rede P2P ✓</span>';
+  if (m.origin.startsWith("NÃO")) return '<span class="q sem">Outra rede ✗</span>';
+  return '<span class="muted">sem verificação</span>';
+}
 
 function renderResults() {
   const tb = $("results");
@@ -261,7 +283,8 @@ function renderResults() {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${scenarios[m.scenario] ? scenarios[m.scenario].name : m.scenario}</td><td class="n">${m.distance} m</td>
       <td class="n">${fmtSignal(m.signal)}</td><td class="n">${m.latencyMs >= 0 ? m.latencyMs + " ms" : "—"}</td>
-      <td class="n">${m.ok ? m.mbps.toFixed(1) + " Mbps" : "—"}</td><td><span class="q ${cls}">${label}</span></td>`;
+      <td class="n">${m.ok ? m.mbps.toFixed(1) + " Mbps" : "—"}</td><td><span class="q ${cls}">${label}</span></td>
+      <td>${originLabel(m)}</td>`;
     tb.appendChild(tr);
   }
   const sum = $("summary");
@@ -307,7 +330,6 @@ async function refresh() {
     const st = $("state");
     st.textContent = s.connected ? "Conectado" : s.connecting ? "Conectando…" : "Desconectado";
     st.className = "pill " + (s.connected ? "on" : s.connecting ? "busy" : "off");
-    $("btnConnect").disabled = s.connected || s.connecting;
     $("btnDisconnect").disabled = !s.connected;
     $("ssid").textContent = s.wifi && s.wifi.ssid ? s.wifi.ssid + (s.wifi.channel ? " · canal " + s.wifi.channel : "") : "—";
     $("signal").textContent = s.wifi ? fmtSignal(s.wifi.signal) : "—";
@@ -315,6 +337,20 @@ async function refresh() {
     $("balance").textContent = s.balance; $("spent").textContent = s.spent;
     $("traffic").textContent = s.traffic; $("ident").textContent = s.identity;
     $("billing").textContent = s.billing || "";
+    const o = $("origin");
+    o.textContent = s.connected ? (s.originMsg ? (s.originOK ? "✓ " : "⚠ ") + s.originMsg : "Verificando a origem da navegação…") : "";
+    o.style.color = s.originOK ? "var(--ok)" : "var(--bad)";
+    const sh = $("shareState");
+    sh.textContent = s.sharing ? "Compartilhando" : "Parado";
+    sh.className = "pill " + (s.sharing ? "on" : "off");
+    $("btnShare").disabled = s.sharing || s.connected || s.connecting;
+    $("btnShareStop").disabled = !s.sharing;
+    $("btnConnect").disabled = s.connected || s.connecting || s.sharing;
+    $("shareMsg").textContent = s.sharingMsg || "";
+    $("shareInfo").innerHTML = s.sharing
+      ? `<div><b>Rede</b>DIRECT-RP-Notebook</div><div><b>Senha</b>redep2p123</div><div><b>Endereço</b>${s.hotspotIP || "aguardando o hotspot"}</div><div><b>Enviado aos clientes</b><span class="num">${s.served}</span></div><div><b>Saldo</b><span class="num">${s.balance}</span> créditos</div><div><b>Ganhou</b><span class="num">${s.earned}</span> créditos</div>`
+      : "";
+    $("clients").innerHTML = s.sharing ? ((s.clients && s.clients.length) ? s.clients.join("<br>") : "Nenhum cliente pagante conectado ainda.") : "";
     if (!measuring && !lastResult) renderScenario();
   } catch (e) { /* app fechado */ }
   try {
@@ -328,6 +364,8 @@ async function refresh() {
 }
 
 $("btnConnect").onclick = () => post("/api/connect").then(refresh);
+$("btnShare").onclick = () => post("/api/share/start").then(refresh);
+$("btnShareStop").onclick = () => post("/api/share/stop").then(refresh);
 $("btnDisconnect").onclick = () => post("/api/disconnect").then(refresh);
 $("btnTopup").onclick = () => post("/api/topup").then(refresh);
 $("clearLog").onclick = () => post("/api/clearlog").then(refresh);

@@ -41,6 +41,14 @@ antes de criar a própria rede.
 3. A seção **Medição de alcance** guia os três cenários (tablet na janela, num cômodo de dentro e ao ar livre).
 4. Para enviar resultados ou o log, desconecte da Rede P2P (o Windows volta ao Wi-Fi de casa) e use os botões de envio.
 
+**Notebook como compartilhador:** clique em **Compartilhar internet**. O app liga o Hotspot Móvel do Windows com o nome
+`DIRECT-RP-Notebook` (senha `redep2p123`) e atende pelas portas 1080, 8080 e 8090. Permita o acesso quando o
+firewall do Windows perguntar. No celular, use **Usar internet de um notebook ou PC**.
+
+**Verificação de origem:** os compartilhadores respondem em `/redep2p/usage` quantos bytes contaram para quem
+pergunta. Cada medição compara esse número com o que foi baixado: só é "Rede P2P ✓" se bater. Um indicador
+contínuo avisa se o aparelho saiu da rede do compartilhador ou se a VPN do Android caiu.
+
 O app usa o proxy do sistema por meio de um arquivo PAC servido por ele mesmo: se o app fechar sem desconectar, o
 Windows volta a navegar direto. Navegadores e apps que respeitam o proxy do Windows passam pela Rede P2P.
 

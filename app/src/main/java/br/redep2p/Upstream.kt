@@ -23,7 +23,10 @@ import java.net.Socket
 /** Rede Wi-Fi comum que, na verdade, é a rede Wi-Fi Direct de outro aparelho do app. */
 data class DirectWifi(val network: Network, val gateway: String, val iface: String?)
 
-/** Procura uma rede Wi-Fi conectada cujo roteador seja 192.168.49.x (dono de um grupo Wi-Fi Direct). */
+/**
+ * Procura uma rede Wi-Fi conectada que seja de um aparelho do app: roteador 192.168.49.x
+ * (grupo Wi-Fi Direct do Android) ou 192.168.137.x (Hotspot Móvel do Windows).
+ */
 @Suppress("DEPRECATION")
 fun findDirectWifi(context: Context): DirectWifi? {
     val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
@@ -34,7 +37,8 @@ fun findDirectWifi(context: Context): DirectWifi? {
         for (route in lp.routes) {
             val gw = route.gateway as? Inet4Address ?: continue
             val b = gw.address
-            if (route.isDefaultRoute && b[0] == 192.toByte() && b[1] == 168.toByte() && b[2] == 49.toByte()) {
+            val ours = b[0] == 192.toByte() && b[1] == 168.toByte() && (b[2] == 49.toByte() || b[2] == 137.toByte())
+            if (route.isDefaultRoute && ours) {
                 return DirectWifi(network, gw.hostAddress ?: continue, lp.interfaceName)
             }
         }

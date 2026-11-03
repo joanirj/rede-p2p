@@ -36,6 +36,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".MeasureActivity"
+            android:exported="false"
+            android:label="Medição de alcance" />
+
         <service
             android:name=".HostService"
             android:exported="false"

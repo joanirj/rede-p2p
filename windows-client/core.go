@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	appVersion = "0.1.0"
+	appVersion = "0.2.0"
 
 	// Iguais ao app Android (Core.kt / Billing.kt).
 	passphrase  = "redep2p123"
@@ -22,6 +22,8 @@ const (
 	httpPort    = 8080
 	controlPort = 8090
 	infoPath    = "/redep2p/info"
+	usagePath   = "/redep2p/usage"
+	hostSSID    = "DIRECT-RP-Notebook"
 
 	mb                 = int64(1048576)
 	pricePerMB         = int64(1000) // mili-créditos por MB
@@ -182,6 +184,14 @@ func (l *ledger) debit(milli int64) bool {
 	l.Spent += milli
 	l.save()
 	return true
+}
+
+func (l *ledger) credit(milli int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.Balance += milli
+	l.Earned += milli
+	l.save()
 }
 
 func (l *ledger) topUp(milli int64) {

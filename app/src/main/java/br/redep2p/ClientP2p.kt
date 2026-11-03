@@ -40,7 +40,11 @@ object ClientP2p {
         private set
 
     @SuppressLint("MissingPermission")
-    fun connect(context: Context, networkName: String, onReady: (String, Network?) -> Unit) {
+    /**
+     * [wifiOnly]: vai direto como Wi-Fi comum, sem tentar o Wi-Fi Direct. É o caso de
+     * notebooks e PCs, que compartilham pelo Hotspot Móvel do Windows.
+     */
+    fun connect(context: Context, networkName: String, wifiOnly: Boolean = false, onReady: (String, Network?) -> Unit) {
         val app = context.applicationContext
         connecting = true
         hostAddress = null
@@ -51,6 +55,11 @@ object ClientP2p {
         if (legacy != null) {
             AppLog.i("Este aparelho já está na rede do compartilhador como Wi-Fi comum")
             ready(legacy.gateway, legacy.network, "Wi-Fi comum", onReady)
+            return
+        }
+
+        if (wifiOnly) {
+            joinAsWifi(app, networkName, onReady)
             return
         }
 

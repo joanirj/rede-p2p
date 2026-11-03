@@ -74,6 +74,8 @@ class MainActivity : Activity() {
         root.addView(section("Este aparelho está sem internet"))
         root.addView(button("Usar internet de outro aparelho") { startClient(Config.NETWORK_NAME) })
         root.addView(button("Usar internet de um repetidor") { startClient(Config.REPEATER_NAME) })
+        root.addView(button("Usar internet de um notebook ou PC") { startClient(Config.NOTEBOOK_NAME, wifiOnly = true) })
+        root.addView(button("Medir alcance") { startActivity(Intent(this, MeasureActivity::class.java)) })
         root.addView(button("Parar de usar") { stopClient() })
 
         root.addView(section("Créditos"))
@@ -152,7 +154,8 @@ class MainActivity : Activity() {
         }
         val client = when {
             ClientVpnService.running && HostService.ownTrafficViaProxy -> "Usar internet: pelo próprio proxy deste aparelho"
-            ClientVpnService.running -> "Usar internet: conectado ao compartilhador (${ClientP2p.hostAddress}) por ${ClientP2p.path}"
+            ClientVpnService.running -> "Usar internet: conectado ao compartilhador (${ClientP2p.hostAddress}) por ${ClientP2p.path}" +
+                (ClientVpnService.originMsg?.let { "\n" + (if (ClientVpnService.originOk) "✓ " else "⚠ ") + it } ?: "")
             ClientP2p.connecting -> "Usar internet: procurando o compartilhador…"
             else -> "Usar internet: desligado"
         }
@@ -315,14 +318,15 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_VPN) {
-            if (resultCode == RESULT_OK) connectClient(pendingNetwork) else AppLog.e("Permissão de VPN negada")
+            if (resultCode == RESULT_OK) connectClient(pendingNetwork, pendingWifiOnly) else AppLog.e("Permissão de VPN negada")
         }
     }
 
     /** Rede escolhida enquanto o Android pede a permissão de VPN. */
     private var pendingNetwork = Config.NETWORK_NAME
+    private var pendingWifiOnly = false
 
-    private fun startClient(networkName: String) {
+    private fun startClient(networkName: String, wifiOnly: Boolean = false) {
         if (!hasWifiDirectPermission()) return
         if (HostService.running && !(HostService.ownTrafficViaProxy && HostService.ready)) {
             AppLog.e("Pare o \"Compartilhar\" antes de usar a internet de outro aparelho.")
@@ -333,17 +337,18 @@ class MainActivity : Activity() {
             return
         }
         pendingNetwork = networkName
+        pendingWifiOnly = wifiOnly
         val prepare = VpnService.prepare(this)
         if (prepare != null) {
             AppLog.i("Pedindo permissão para criar a VPN local…")
             @Suppress("DEPRECATION")
             startActivityForResult(prepare, REQ_VPN)
         } else {
-            connectClient(networkName)
+            connectClient(networkName, wifiOnly)
         }
     }
 
-    private fun connectClient(networkName: String) {
+    private fun connectClient(networkName: String, wifiOnly: Boolean = false) {
         val app = applicationContext
         if (HostService.ownTrafficViaProxy && HostService.ready) {
             // Repetidor ou modo 2,4 GHz: este aparelho navega pelo próprio proxy.
@@ -355,7 +360,7 @@ class MainActivity : Activity() {
             )
             return
         }
-        ClientP2p.connect(this, networkName) { host, network ->
+        ClientP2p.connect(this, networkName, wifiOnly) { host, network ->
             val intent = Intent(app, ClientVpnService::class.java)
                 .setAction(ClientVpnService.ACTION_START)
                 .putExtra(ClientVpnService.EXTRA_HOST, host)

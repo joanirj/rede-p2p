@@ -54,6 +54,7 @@ func main() {
 	<-stop
 	logf("Fechando…")
 	a.disconnect()
+	a.stopSharing()
 }
 
 func pause() {

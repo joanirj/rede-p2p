@@ -429,6 +429,10 @@ class ProxyServer(
         val target = parts[1]
         val version = parts[2]
 
+        if (target.startsWith(Config.USAGE_PATH)) {
+            sendUsage(client, out)
+            return
+        }
         if (target.startsWith(Config.INFO_PATH)) {
             sendInfo(client, out)
             return
@@ -491,6 +495,20 @@ class ProxyServer(
     }
 
     /** Informa saltos até a internet e o endereço IPv6 link-local da interface Wi-Fi Direct. */
+    /**
+     * Verificação de origem: quantos bytes este compartilhador contou para quem pergunta.
+     * O cliente compara com o que baixou para confirmar que o tráfego veio daqui.
+     */
+    private fun sendUsage(client: Socket, out: OutputStream) {
+        val ip = normalizeIp(client.inetAddress)
+        val body = "client=$ip\nbytes=${meter?.used(ip) ?: -1}\nhost=${Identity.publicHex}\n"
+        out.write(
+            ("HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ${body.length}\r\n" +
+                "Connection: close\r\n\r\n$body").toByteArray()
+        )
+        out.flush()
+    }
+
     private fun sendInfo(client: Socket, out: OutputStream) {
         val ll = try {
             NetworkInterface.getByInetAddress(client.localAddress)?.inetAddresses?.toList()

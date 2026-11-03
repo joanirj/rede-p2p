@@ -105,6 +105,13 @@ func socksDial(proxyHost, target string, timeout time.Duration) (net.Conn, error
 type localProxy struct {
 	mu   sync.Mutex
 	host string // compartilhador atual; vazio = desconectado
+	ln   net.Listener
+}
+
+func (p *localProxy) close() {
+	if p.ln != nil {
+		p.ln.Close()
+	}
 }
 
 func (p *localProxy) setHost(h string) {
@@ -124,6 +131,7 @@ func (p *localProxy) serve() error {
 	if err != nil {
 		return err
 	}
+	p.ln = ln
 	go func() {
 		for {
 			c, err := ln.Accept()

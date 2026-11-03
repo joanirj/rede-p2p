@@ -1,6 +1,8 @@
 package br.redep2p
 
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Network
 import android.net.VpnService
 import android.os.Build
@@ -30,7 +32,24 @@ class ClientVpnService : VpnService() {
 
         @Volatile
         var running = false
+
+        /** Compartilhador em uso e a rede até ele (usados pela tela de medição). */
+        @Volatile
+        var currentHost: String? = null
+
+        @Volatile
+        var currentNetwork: Network? = null
+
+        /** Verificação contínua da origem da navegação. */
+        @Volatile
+        var originOk = false
+
+        @Volatile
+        var originMsg: String? = null
     }
+
+    @Volatile
+    private var monitor: Thread? = null
 
     /** Proxy local (127.0.0.1) que leva o tráfego ao compartilhador pela rede certa. */
     private var relay: ProxyServer? = null
@@ -125,9 +144,13 @@ class ClientVpnService : VpnService() {
                 bridge.Bridge.start(fd.toLong(), proxy, Config.MTU.toLong())
                 AppLog.i("Túnel ativo: todo o tráfego passa pelo compartilhador. Teste abrindo um site.")
                 if (host != "127.0.0.1") {
+                    currentHost = host
+                    currentNetwork = network
+                    // O que a tela de medição baixa direto pelo compartilhador também é pago.
                     billing = BillingClient(InetAddress.getByName(host), network) {
-                        bridge.Bridge.uploaded() + bridge.Bridge.downloaded()
+                        bridge.Bridge.uploaded() + bridge.Bridge.downloaded() + Measurer.extraBytes.get()
                     }.also { it.start() }
+                    startOriginMonitor(host, network)
                 }
             } catch (e: Throwable) {
                 running = false
@@ -168,7 +191,46 @@ class ClientVpnService : VpnService() {
         }
     }
 
+    /**
+     * A cada 5 s confere se a navegação continua passando pela Rede P2P: a VPN do app é a
+     * rede ativa e o compartilhador responde. Se o Android derrubar a VPN ou a conexão com
+     * o compartilhador, o aparelho pode voltar a navegar pela rede padrão sem avisar.
+     */
+    private fun startOriginMonitor(host: String, network: Network?) {
+        val t = Thread {
+            val cm = getSystemService(ConnectivityManager::class.java)
+            while (running && monitor === Thread.currentThread()) {
+                val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                val viaVpn = caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+                val reachable = Measurer.hostReachable(host, network)
+                val (ok, msg) = when {
+                    !viaVpn -> false to "A VPN do app não é a rede ativa: a navegação pode estar indo pela rede padrão"
+                    !reachable -> false to "O compartilhador não responde: a navegação pode não estar passando pela Rede P2P"
+                    else -> true to "Navegação pela Rede P2P (compartilhador $host)"
+                }
+                if (ok != originOk || msg != originMsg) {
+                    if (ok) AppLog.i("Origem confirmada: $msg") else AppLog.e(msg)
+                }
+                originOk = ok
+                originMsg = msg
+                try {
+                    Thread.sleep(5000)
+                } catch (e: InterruptedException) {
+                    break
+                }
+            }
+        }
+        monitor = t
+        t.start()
+    }
+
     private fun stopTunnel() {
+        monitor?.interrupt()
+        monitor = null
+        originOk = false
+        originMsg = null
+        currentHost = null
+        currentNetwork = null
         billing?.stop()
         billing = null
         if (running) {

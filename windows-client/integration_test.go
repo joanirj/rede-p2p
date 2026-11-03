@@ -78,6 +78,7 @@ func TestProxyAndBilling(t *testing.T) {
 	if err := p.serve(); err != nil {
 		t.Skip("porta do proxy local ocupada:", err)
 	}
+	t.Cleanup(p.close)
 	p.setHost("127.0.0.1")
 	before := trafficBytes.Load()
 	pu, _ := url.Parse("http://" + localProxyAddr)

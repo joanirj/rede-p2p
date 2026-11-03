@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** Versão exibida no app e enviada com o log. */
 object BuildInfo {
-    const val VERSION = "0.4.4"
+    const val VERSION = "0.5.0"
 }
 
 /** Parâmetros fixos da versão de teste. */
@@ -25,6 +25,12 @@ object Config {
 
     /** Endereço que informa saltos até a internet e o IPv6 link-local do aparelho. */
     const val INFO_PATH = "/redep2p/info"
+
+    /** Bytes contados pelo compartilhador para o cliente que pergunta (verificação de origem). */
+    const val USAGE_PATH = "/redep2p/usage"
+
+    /** Rede do notebook ou PC compartilhando pelo Hotspot Móvel do Windows. */
+    const val NOTEBOOK_NAME = "DIRECT-RP-Notebook"
     const val PASSPHRASE = "redep2p123"
     const val SOCKS_PORT = 1080
     const val HTTP_PORT = 8080

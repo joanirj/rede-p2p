@@ -22,3 +22,5 @@ func currentWifi() wifiStatus           { return wifiStatus{Signal: -1} }
 func openBrowser(url string)            {}
 func getAutoConfigURL() string          { return "" }
 func setAutoConfigURL(url string) error { return nil }
+
+func hotspot(action string) error { return errors.New("só no Windows") }

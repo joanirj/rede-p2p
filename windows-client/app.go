@@ -34,10 +34,22 @@ type app struct {
 	billing    *billingClient
 	results    []measurement
 	measuring  bool
+
+	// Origem da internet do cliente (verificação contínua).
+	originOK  bool
+	originMsg string
+
+	// Notebook como compartilhador.
+	server     *hostServer
+	sharing    bool
+	sharingMsg string
 }
 
 func newApp() *app {
-	return &app{id: loadIdentity(), led: loadLedger(), proxy: &localProxy{}}
+	a := &app{id: loadIdentity(), proxy: &localProxy{}}
+	a.led = loadLedger()
+	a.server = newHostServer(a.id, a.led)
+	return a
 }
 
 // ----------------------------------------------------------- proxy do sistema
@@ -112,6 +124,11 @@ func queryInfo(host string) (int, error) {
 
 func (a *app) connect() {
 	a.mu.Lock()
+	if a.sharing {
+		a.mu.Unlock()
+		logf("ERRO: pare de compartilhar antes de usar a internet de outro aparelho")
+		return
+	}
 	if a.connecting || a.connected {
 		a.mu.Unlock()
 		return
@@ -169,6 +186,121 @@ func (a *app) connect() {
 	a.mu.Unlock()
 	logf("Conectado ao compartilhador %s pela rede %s (endereço deste notebook %s, %d salto(s) do compartilhador até a internet)", host, ssid, local, hops)
 	logf("Navegadores e apps que usam o proxy do Windows já passam pela Rede P2P.")
+	go a.watchOrigin(b)
+}
+
+// watchOrigin confere a cada 5 s se o notebook continua na rede do compartilhador.
+// Se o Windows voltar para o Wi-Fi de casa, a navegação não passa mais pela Rede P2P.
+func (a *app) watchOrigin(b *billingClient) {
+	for {
+		a.mu.Lock()
+		still := a.connected && a.billing == b
+		host, ssid := a.host, a.ssid
+		a.mu.Unlock()
+		if !still {
+			return
+		}
+		w := currentWifi()
+		ok, msg := true, "Navegação pela Rede P2P ("+ssid+")"
+		switch {
+		case w.SSID != "" && !strings.HasPrefix(w.SSID, ssidPrefix):
+			ok, msg = false, "O Windows saiu da Rede P2P e está no Wi-Fi \""+w.SSID+"\": a navegação NÃO passa pelo compartilhador"
+		default:
+			if _, err := queryInfo(host); err != nil {
+				ok, msg = false, "O compartilhador não responde: a navegação pode não estar funcionando"
+			}
+		}
+		a.mu.Lock()
+		changed := ok != a.originOK || msg != a.originMsg
+		a.originOK, a.originMsg = ok, msg
+		a.mu.Unlock()
+		if changed {
+			if ok {
+				logf("Origem confirmada: %s", msg)
+			} else {
+				logf("ERRO: %s", msg)
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func queryUsage(host string) (int64, string, error) {
+	c := http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	resp, err := c.Get("http://" + net.JoinHostPort(host, strconv.Itoa(httpPort)) + usagePath)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0, "", errors.New("o compartilhador não tem a verificação (atualize o app dele)")
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	var bytes int64 = -1
+	var hostID string
+	for _, line := range strings.Split(string(body), "\n") {
+		if v, ok := strings.CutPrefix(line, "bytes="); ok {
+			bytes, _ = strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		}
+		if v, ok := strings.CutPrefix(line, "host="); ok {
+			hostID = strings.TrimSpace(v)
+		}
+	}
+	if bytes < 0 {
+		return 0, "", errors.New("resposta inválida do compartilhador")
+	}
+	return bytes, hostID, nil
+}
+
+// --------------------------------------------------------- compartilhar
+
+func (a *app) startSharing() {
+	a.mu.Lock()
+	if a.connected || a.connecting {
+		a.mu.Unlock()
+		logf("ERRO: desconecte da Rede P2P antes de compartilhar a internet deste notebook")
+		return
+	}
+	if a.sharing {
+		a.mu.Unlock()
+		return
+	}
+	a.sharing = true
+	a.sharingMsg = "Ligando o Hotspot Móvel…"
+	a.mu.Unlock()
+	if err := a.server.start(); err != nil {
+		logf("ERRO: %v", err)
+		a.mu.Lock()
+		a.sharing, a.sharingMsg = false, ""
+		a.mu.Unlock()
+		return
+	}
+	msg := fmt.Sprintf("Compartilhando pela rede %s (senha %s)", hostSSID, passphrase)
+	if err := hotspot("start"); err != nil {
+		logf("Não consegui ligar o Hotspot Móvel sozinho: %v", err)
+		logf("Ligue à mão: Configurações → Rede e Internet → Hotspot Móvel → Editar: nome %s, senha %s, banda 2,4 GHz → ligar.", hostSSID, passphrase)
+		msg = "Ligue o Hotspot Móvel à mão (instruções no registro abaixo). O compartilhador já está pronto."
+	}
+	a.mu.Lock()
+	a.sharingMsg = msg
+	a.mu.Unlock()
+	logf("Pronto. No celular ou tablet, toque em \"Usar internet de um notebook\".")
+	logf("Se o Windows perguntar sobre o firewall, permita o acesso em redes privadas e públicas.")
+}
+
+func (a *app) stopSharing() {
+	a.mu.Lock()
+	was := a.sharing
+	a.sharing, a.sharingMsg = false, ""
+	a.mu.Unlock()
+	if !was {
+		return
+	}
+	a.server.stop()
+	if err := hotspot("stop"); err != nil {
+		logf("Não consegui desligar o Hotspot Móvel sozinho (%v). Desligue em Configurações → Hotspot Móvel.", err)
+	}
+	logf("Compartilhamento encerrado")
 }
 
 func (a *app) disconnect() {
@@ -176,6 +308,7 @@ func (a *app) disconnect() {
 	b := a.billing
 	was := a.connected
 	a.connected, a.billing, a.host = false, nil, ""
+	a.originOK, a.originMsg = false, ""
 	a.mu.Unlock()
 	if b != nil {
 		b.stop()
@@ -200,6 +333,9 @@ type measurement struct {
 	RxMbps    string  `json:"rxMbps"`
 	LatencyMs int     `json:"latencyMs"`
 	Mbps      float64 `json:"mbps"`
+	DownBytes int64   `json:"downBytes"`
+	HostBytes int64   `json:"hostBytes"`
+	Origin    string  `json:"origin"`
 	OK        bool    `json:"ok"`
 	Error     string  `json:"error,omitempty"`
 }
@@ -247,6 +383,9 @@ func (a *app) measure(scenario string, distance int) measurement {
 	sort.Ints(lat)
 	m.LatencyMs = lat[len(lat)/2]
 
+	// Verificação de origem: quantos bytes o compartilhador contou para este notebook.
+	usage0, _, usageErr := queryUsage(host)
+
 	// Velocidade: download curto pelo proxy local (passa pelo compartilhador e é cobrado).
 	proxyURL, _ := url.Parse("http://" + localProxyAddr)
 	client := http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
@@ -262,12 +401,31 @@ func (a *app) measure(scenario string, distance int) measurement {
 		secs := time.Since(t0).Seconds()
 		if n > 100_000 && secs > 0 {
 			m.Mbps = float64(n) * 8 / secs / 1e6
+			m.DownBytes = n
 			m.Error = ""
 			break
 		}
 	}
 	m.OK = m.Error == ""
-	logf("Medição %s %d m: sinal %d%%, latência %d ms, %.1f Mbps %s", scenario, distance, m.Signal, m.LatencyMs, m.Mbps, m.Error)
+	switch {
+	case usageErr != nil:
+		m.Origin = "sem verificação: " + usageErr.Error()
+	case !m.OK:
+		m.Origin = "—"
+	default:
+		usage1, _, err := queryUsage(host)
+		if err != nil {
+			m.Origin = "sem verificação: " + err.Error()
+			break
+		}
+		m.HostBytes = usage1 - usage0
+		if m.HostBytes >= m.DownBytes*9/10 {
+			m.Origin = "confirmada"
+		} else {
+			m.Origin = fmt.Sprintf("NÃO confirmada: o compartilhador contou %s e o notebook baixou %s", megabytes(m.HostBytes), megabytes(m.DownBytes))
+		}
+	}
+	logf("Medição %s %d m: sinal %d%%, latência %d ms, %.1f Mbps, origem %s %s", scenario, distance, m.Signal, m.LatencyMs, m.Mbps, m.Origin, m.Error)
 	return m
 }
 
@@ -278,19 +436,19 @@ func (a *app) saveResults() {
 	}
 	defer f.Close()
 	w := csv.NewWriter(f)
-	_ = w.Write([]string{"cenario", "distancia_m", "hora", "rede", "sinal_pct", "canal", "taxa_wifi_mbps", "latencia_ms", "velocidade_mbps", "ok", "erro"})
+	_ = w.Write([]string{"cenario", "distancia_m", "hora", "rede", "sinal_pct", "canal", "taxa_wifi_mbps", "latencia_ms", "velocidade_mbps", "origem", "ok", "erro"})
 	for _, m := range a.results {
 		_ = w.Write([]string{m.Scenario, strconv.Itoa(m.Distance), m.Time, m.SSID, strconv.Itoa(m.Signal), strconv.Itoa(m.Channel),
-			m.RxMbps, strconv.Itoa(m.LatencyMs), fmt.Sprintf("%.2f", m.Mbps), strconv.FormatBool(m.OK), m.Error})
+			m.RxMbps, strconv.Itoa(m.LatencyMs), fmt.Sprintf("%.2f", m.Mbps), m.Origin, strconv.FormatBool(m.OK), m.Error})
 	}
 	w.Flush()
 }
 
 func (a *app) resultsCSV() string {
 	var sb strings.Builder
-	sb.WriteString("cenario,distancia_m,sinal_pct,latencia_ms,velocidade_mbps,erro\n")
+	sb.WriteString("cenario,distancia_m,sinal_pct,latencia_ms,velocidade_mbps,origem,erro\n")
 	for _, m := range a.results {
-		fmt.Fprintf(&sb, "%s,%d,%d,%d,%.1f,%s\n", m.Scenario, m.Distance, m.Signal, m.LatencyMs, m.Mbps, m.Error)
+		fmt.Fprintf(&sb, "%s,%d,%d,%d,%.1f,%s,%s\n", m.Scenario, m.Distance, m.Signal, m.LatencyMs, m.Mbps, m.Origin, m.Error)
 	}
 	return sb.String()
 }
@@ -322,6 +480,13 @@ func (a *app) routes(page []byte) http.Handler {
 		st := map[string]any{
 			"version": appVersion, "connecting": a.connecting, "connected": a.connected,
 			"ssid": a.ssid, "host": a.host, "hops": a.hops, "measuring": a.measuring,
+			"originOK": a.originOK, "originMsg": a.originMsg,
+			"sharing": a.sharing, "sharingMsg": a.sharingMsg,
+		}
+		if a.sharing {
+			st["clients"] = a.server.billing.Summary()
+			st["served"] = megabytes(a.server.sent.Load())
+			st["hotspotIP"] = findLocalIPv4("192.168.137.")
 		}
 		b := a.billing
 		a.mu.Unlock()
@@ -350,6 +515,14 @@ func (a *app) routes(page []byte) http.Handler {
 	})
 	post("/api/disconnect", func(w http.ResponseWriter, r *http.Request) {
 		a.disconnect()
+		writeJSON(w, map[string]bool{"ok": true})
+	})
+	post("/api/share/start", func(w http.ResponseWriter, r *http.Request) {
+		go a.startSharing()
+		writeJSON(w, map[string]bool{"ok": true})
+	})
+	post("/api/share/stop", func(w http.ResponseWriter, r *http.Request) {
+		a.stopSharing()
 		writeJSON(w, map[string]bool{"ok": true})
 	})
 	post("/api/topup", func(w http.ResponseWriter, r *http.Request) {
