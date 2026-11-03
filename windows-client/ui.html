@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rede P2P</title>
+<style>
+  :root {
+    --paper: #eef0e8; --surface: #f8f9f4; --ink: #1e2a2b; --ink-soft: #5b6865; --line: #cfd5ca;
+    --share: #d27a1f; --client: #0f8079; --bad: #b4412f; --ok: #2e7d4f; --warn: #b07a12;
+    --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #111716; --surface: #182020; --ink: #e5ebe7; --ink-soft: #99a7a2; --line: #2b3533;
+      --share: #f09d47; --client: #39c0b3; --bad: #ef7b67; --ok: #62c98b; --warn: #e2b54a; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--font); }
+  .page { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 18px; }
+  h1 { font-size: 26px; margin: 0; }
+  h2 { font-size: 18px; margin: 0 0 10px; }
+  .muted { color: var(--ink-soft); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: inherit; font-weight: 600; border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+    border-radius: 999px; padding: 8px 16px; cursor: pointer; }
+  button.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--client); outline-offset: 2px; }
+  .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 18px; margin: 12px 0; }
+  .status div b { display: block; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 13px; border: 1px solid var(--line); }
+  .pill.on { color: var(--client); } .pill.off { color: var(--ink-soft); } .pill.busy { color: var(--share); }
+  .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .tabs button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  ol.prep { margin: 0 0 12px; padding-left: 22px; } ol.prep li { margin: 4px 0; }
+  .step { border: 1px dashed var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 10px; }
+  .step .big { font-size: 18px; font-weight: 600; }
+  .result { font-family: var(--mono); }
+  .q { font-weight: 700; } .q.video { color: var(--ok); } .q.util { color: var(--client); } .q.lenta { color: var(--warn); } .q.sem { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); }
+  td.n, th.n { text-align: right; font-family: var(--mono); }
+  .scroll { overflow-x: auto; }
+  pre { margin: 0; max-height: 260px; overflow: auto; font: 12px/1.45 var(--mono); white-space: pre-wrap; background: var(--paper);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .summary div { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  a { color: var(--client); }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>Rede P2P · notebook</h1>
+    <div class="muted">Usa a internet de um compartilhador por perto e mede até onde a rede alcança. <span id="ver"></span></div>
+  </header>
+
+  <section class="card" aria-label="Conexão">
+    <div class="row">
+      <span id="state" class="pill off">Desconectado</span>
+      <button id="btnConnect" class="primary">Conectar à Rede P2P</button>
+      <button id="btnDisconnect">Desconectar</button>
+      <button id="btnTopup">Recarregar saldo de teste</button>
+    </div>
+    <div class="status">
+      <div><b>Rede</b><span id="ssid">—</span></div>
+      <div><b>Sinal</b><span id="signal" class="num">—</span></div>
+      <div><b>Saldo</b><span id="balance" class="num">—</span> créditos</div>
+      <div><b>Gasto</b><span id="spent" class="num">—</span> créditos</div>
+      <div><b>Tráfego pela rede</b><span id="traffic" class="num">—</span></div>
+      <div><b>Identidade</b><span id="ident" class="num">—</span></div>
+    </div>
+    <div id="billing" class="muted"></div>
+    <div id="wifiNote" class="muted"></div>
+  </section>
+
+  <section class="card" aria-label="Medição de alcance">
+    <h2>Medição de alcance</h2>
+    <p class="muted" style="margin-top:0">Três cenários, um de cada vez. Em cada ponto, fique parado e clique em <b>Medir aqui</b>: leva uns 15 segundos. A medição gasta créditos (cerca de 3 MB por ponto).</p>
+    <div class="tabs" id="tabs"></div>
+    <div id="scenario"></div>
+  </section>
+
+  <section class="card" aria-label="Resultados">
+    <h2>Resultados</h2>
+    <div class="summary" id="summary"></div>
+    <div class="scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>Cenário</th><th class="n">Distância</th><th class="n">Sinal</th><th class="n">Latência</th><th class="n">Velocidade</th><th>Qualidade</th></tr></thead>
+        <tbody id="results"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <a id="sendResults" href="#" target="_blank" rel="noopener"><button>Enviar resultados ao Claude (abre o GitHub)</button></a>
+      <button id="clearResults">Apagar resultados</button>
+    </div>
+    <p class="muted">Para enviar, o notebook precisa estar com internet: desconecte da Rede P2P antes. Os resultados ficam salvos.</p>
+  </section>
+
+  <section class="card" aria-label="Registro">
+    <h2>Registro (log)</h2>
+    <div class="row" style="margin-bottom:10px">
+      <a id="sendLog" href="#" target="_blank" rel="noopener"><button>Enviar log ao Claude (abre o GitHub)</button></a>
+      <button id="copyLog">Copiar log</button>
+      <button id="clearLog">Limpar log</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const post = (u) => fetch(u, { method: "POST" });
+const STEP_M = 0.75; // metros por passo
+
+const scenarios = {
+  B: {
+    name: "1 · Tablet na janela",
+    from: "do tablet",
+    prep: [
+      "No tablet, abra o app Rede P2P e toque em <b>Compartilhar internet</b>. Espere aparecer \"Compartilhando\".",
+      "Coloque o tablet <b>na janela da frente</b> (ou na porta), em pé ou apoiado num móvel, com a tela virada para a rua. Não mexa mais nele até terminar este cenário.",
+      "Leve o notebook para a calçada, bem em frente à janela, e clique em <b>Conectar à Rede P2P</b> no topo.",
+      "Ande sempre pela mesma calçada e na mesma direção.",
+    ],
+    distances: [1, 5, 10, 15, 20, 25, 30, 40, 50, 60],
+  },
+  C: {
+    name: "2 · Tablet num cômodo de dentro",
+    from: "da frente da casa",
+    prep: [
+      "Leve o tablet para um <b>cômodo de dentro da casa</b>, longe da frente (quarto ou sala dos fundos), em cima de uma mesa. Deixe as portas como costumam ficar.",
+      "Confira se ele continua \"Compartilhando\".",
+      "Com o notebook, vá para a calçada em frente à casa. <b>A distância agora conta a partir da frente da casa.</b>",
+      "Se o notebook desconectar, clique em <b>Conectar à Rede P2P</b> antes de medir.",
+    ],
+    distances: [0, 5, 10, 15, 20, 25, 30, 40, 50, 60],
+  },
+  A: {
+    name: "3 · Ao ar livre (referência)",
+    from: "do tablet",
+    prep: [
+      "Leve o tablet para fora, <b>na calçada ou no portão</b>, em cima de algo na altura da cintura, ainda compartilhando.",
+      "Comece com o notebook ao lado dele, com caminho livre entre os dois (sem carros ou muros no meio).",
+      "Ande em linha reta pela calçada, na mesma direção.",
+    ],
+    distances: [1, 5, 10, 15, 20, 25, 30, 40, 50, 60],
+  },
+};
+
+let current = "B";
+let stepIdx = 0;
+let lastResult = null;
+let measuring = false;
+let results = [];
+let connected = false;
+
+function quality(m) {
+  if (!m.ok) return ["sem", "Sem conexão"];
+  if (m.mbps >= 3 && m.latencyMs < 100) return ["video", "Vídeo"];
+  if (m.mbps >= 0.5 && m.latencyMs < 300) return ["util", "Útil"];
+  return ["lenta", "Muito lenta"];
+}
+
+function renderTabs() {
+  $("tabs").innerHTML = "";
+  for (const key of ["B", "C", "A"]) {
+    const b = document.createElement("button");
+    b.textContent = scenarios[key].name;
+    b.setAttribute("aria-pressed", key === current);
+    b.onclick = () => { current = key; stepIdx = 0; lastResult = null; render(); };
+    $("tabs").appendChild(b);
+  }
+}
+
+function stepText(sc, i) {
+  const d = sc.distances[i];
+  if (d === 0) return "Fique na calçada, bem em frente à casa.";
+  if (i === 0) return `Fique a ${d} metro ${sc.from}, do lado de fora.`;
+  const prev = sc.distances[i - 1];
+  const steps = Math.round((d - prev) / STEP_M);
+  const total = Math.round(d / STEP_M);
+  return `Afaste-se pela calçada até <b>${d} m ${sc.from}</b>: cerca de ${steps} passos a partir do ponto anterior (${total} passos no total).`;
+}
+
+function renderScenario() {
+  const sc = scenarios[current];
+  const box = $("scenario");
+  const done = stepIdx >= sc.distances.length;
+  let html = `<ol class="prep">${sc.prep.map((p) => `<li>${p}</li>`).join("")}</ol>`;
+  if (done) {
+    html += `<div class="step"><div class="big">Cenário concluído.</div><div class="muted">Passe para o próximo cenário nas abas acima ou envie os resultados.</div>
+      <div class="row"><button id="restart">Refazer este cenário</button></div></div>`;
+    box.innerHTML = html;
+    $("restart").onclick = () => { stepIdx = 0; lastResult = null; render(); };
+    return;
+  }
+  const d = sc.distances[stepIdx];
+  html += `<div class="step">
+    <div class="muted">Ponto ${stepIdx + 1} de ${sc.distances.length}</div>
+    <div class="big">${stepText(sc, stepIdx)}</div>
+    <div class="muted">Fique parado e segure o notebook como vai usá-lo.</div>
+    <div id="res" class="result"></div>
+    <div class="row" id="stepButtons"></div>
+  </div>`;
+  box.innerHTML = html;
+  const btns = $("stepButtons");
+  const add = (label, cls, fn, disabled) => {
+    const b = document.createElement("button");
+    b.textContent = label; if (cls) b.className = cls; b.onclick = fn; b.disabled = !!disabled;
+    btns.appendChild(b);
+  };
+  if (measuring) {
+    $("res").textContent = "Medindo… fique parado (uns 15 segundos).";
+    return;
+  }
+  if (!lastResult) {
+    add("Medir aqui", "primary", () => measure(d), !connected);
+    add("Pular este ponto", "", () => { stepIdx++; render(); });
+    if (!connected) $("res").textContent = "Conecte à Rede P2P no topo antes de medir.";
+    return;
+  }
+  const [cls, label] = quality(lastResult);
+  $("res").innerHTML = lastResult.ok
+    ? `<span class="q ${cls}">${label}</span> · sinal ${fmtSignal(lastResult.signal)} · latência ${lastResult.latencyMs} ms · ${lastResult.mbps.toFixed(1)} Mbps`
+    : `<span class="q sem">Sem conexão neste ponto.</span> Meça de novo; se continuar sem conexão, este é o limite.`;
+  if (lastResult.ok) {
+    add("Próximo ponto", "primary", () => { stepIdx++; lastResult = null; render(); });
+    add("Medir de novo", "", () => measure(d), !connected);
+  } else {
+    add("Medir de novo", "primary", () => measure(d));
+    add("Encerrar este cenário (limite alcançado)", "", () => { stepIdx = sc.distances.length; lastResult = null; render(); });
+    add("Próximo ponto mesmo assim", "", () => { stepIdx++; lastResult = null; render(); });
+  }
+}
+
+async function measure(d) {
+  measuring = true; lastResult = null; render();
+  try {
+    const r = await fetch(`/api/measure?scenario=${current}&distance=${d}`, { method: "POST" });
+    lastResult = await r.json();
+  } catch (e) {
+    lastResult = { ok: false, error: String(e) };
+  }
+  measuring = false;
+  await loadResults();
+  render();
+}
+
+const fmtSignal = (s) => (s >= 0 ? s + "%" : "—");
+
+function renderResults() {
+  const tb = $("results");
+  tb.innerHTML = "";
+  for (const m of results) {
+    const [cls, label] = quality(m);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${scenarios[m.scenario] ? scenarios[m.scenario].name : m.scenario}</td><td class="n">${m.distance} m</td>
+      <td class="n">${fmtSignal(m.signal)}</td><td class="n">${m.latencyMs >= 0 ? m.latencyMs + " ms" : "—"}</td>
+      <td class="n">${m.ok ? m.mbps.toFixed(1) + " Mbps" : "—"}</td><td><span class="q ${cls}">${label}</span></td>`;
+    tb.appendChild(tr);
+  }
+  const sum = $("summary");
+  sum.innerHTML = "";
+  for (const key of ["B", "C", "A"]) {
+    const rs = results.filter((m) => m.scenario === key);
+    if (!rs.length) continue;
+    const maxOf = (f) => rs.filter(f).reduce((a, m) => Math.max(a, m.distance), -1);
+    const v = maxOf((m) => quality(m)[0] === "video");
+    const u = maxOf((m) => ["video", "util"].includes(quality(m)[0]));
+    const c = maxOf((m) => m.ok);
+    const div = document.createElement("div");
+    const f = (x) => (x >= 0 ? x + " m" : "—");
+    div.innerHTML = `<b>${scenarios[key].name}</b><br>Vídeo até <b>${f(v)}</b> · Útil até <b>${f(u)}</b> · Conecta até <b>${f(c)}</b>`;
+    sum.appendChild(div);
+  }
+}
+
+function issueURL(title, body) {
+  const max = 5500;
+  if (body.length > max) body = "(início cortado)\n" + body.slice(-max);
+  return "https://github.com/joanirj/rede-p2p/issues/new?title=" + encodeURIComponent(title) + "&body=" + encodeURIComponent(body);
+}
+
+let csv = "";
+async function loadResults(clear) {
+  const r = await fetch("/api/results" + (clear ? "?clear=1" : ""), { method: clear ? "POST" : "GET" });
+  const j = await r.json();
+  results = j.results || [];
+  csv = j.csv || "";
+  renderResults();
+  const summary = [...$("summary").querySelectorAll("div")].map((d) => d.innerText.replace(/\n/g, ": ")).join("\n");
+  $("sendResults").href = issueURL("Medições de alcance · Windows", `Versão: ${$("ver").textContent}\n\nResumo:\n${summary}\n\n\`\`\`csv\n${csv}\`\`\``);
+}
+
+function render() { renderTabs(); renderScenario(); }
+
+async function refresh() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    connected = s.connected;
+    $("ver").textContent = "Versão " + s.version;
+    const st = $("state");
+    st.textContent = s.connected ? "Conectado" : s.connecting ? "Conectando…" : "Desconectado";
+    st.className = "pill " + (s.connected ? "on" : s.connecting ? "busy" : "off");
+    $("btnConnect").disabled = s.connected || s.connecting;
+    $("btnDisconnect").disabled = !s.connected;
+    $("ssid").textContent = s.wifi && s.wifi.ssid ? s.wifi.ssid + (s.wifi.channel ? " · canal " + s.wifi.channel : "") : "—";
+    $("signal").textContent = s.wifi ? fmtSignal(s.wifi.signal) : "—";
+    $("wifiNote").textContent = (s.wifi && s.wifi.note) || "";
+    $("balance").textContent = s.balance; $("spent").textContent = s.spent;
+    $("traffic").textContent = s.traffic; $("ident").textContent = s.identity;
+    $("billing").textContent = s.billing || "";
+    if (!measuring && !lastResult) renderScenario();
+  } catch (e) { /* app fechado */ }
+  try {
+    const log = await (await fetch("/api/log")).text();
+    const pre = $("log");
+    const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 10;
+    pre.textContent = log;
+    if (atEnd) pre.scrollTop = pre.scrollHeight;
+    $("sendLog").href = issueURL("Log · Windows", "```\n" + log + "\n```");
+  } catch (e) {}
+}
+
+$("btnConnect").onclick = () => post("/api/connect").then(refresh);
+$("btnDisconnect").onclick = () => post("/api/disconnect").then(refresh);
+$("btnTopup").onclick = () => post("/api/topup").then(refresh);
+$("clearLog").onclick = () => post("/api/clearlog").then(refresh);
+$("clearResults").onclick = () => loadResults(true);
+$("copyLog").onclick = async () => {
+  try { await navigator.clipboard.writeText($("log").textContent); $("copyLog").textContent = "Copiado"; }
+  catch (e) { const r = document.createRange(); r.selectNodeContents($("log")); getSelection().removeAllRanges(); getSelection().addRange(r); }
+  setTimeout(() => ($("copyLog").textContent = "Copiar log"), 1500);
+};
+
+render();
+loadResults();
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-name: Compilar APK
+name: Compilar APK e Windows
 
 on:
   push:
@@ -41,6 +41,14 @@ jobs:
           mkdir -p ../app/libs
           gomobile bind -v -target=android/arm64,android/arm -androidapi 21 -o ../app/libs/tun2socks.aar .
 
+      - name: Testar e compilar o cliente Windows
+        working-directory: windows-client
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../rede-p2p-windows.exe .
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
@@ -53,7 +61,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk rede-p2p.apk
-          gh release create "teste-${{ github.run_number }}" rede-p2p.apk \
+          gh release create "teste-${{ github.run_number }}" rede-p2p.apk rede-p2p-windows.exe \
             --title "Teste ${{ github.run_number }}" \
             --notes "Versão de teste gerada automaticamente a partir do commit ${{ github.sha }}." \
             --latest

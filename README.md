@@ -33,6 +33,17 @@ Todo dono de grupo Wi-Fi Direct no Android tem o endereço 192.168.49.1. Por iss
 aparelho de cima pelo endereço IPv6 link-local dele, descoberto em `http://192.168.49.1:8080/redep2p/info`
 antes de criar a própria rede.
 
+## Notebook com Windows (cliente e medição de alcance)
+
+1. Em **Releases**, baixe `rede-p2p-windows.exe` e abra. Se o Windows mostrar "O Windows protegeu o computador",
+   clique em **Mais informações → Executar assim mesmo** (o programa de teste não tem assinatura digital).
+2. A tela do app abre no navegador. Com um aparelho compartilhando por perto, clique em **Conectar à Rede P2P**.
+3. A seção **Medição de alcance** guia os três cenários (tablet na janela, num cômodo de dentro e ao ar livre).
+4. Para enviar resultados ou o log, desconecte da Rede P2P (o Windows volta ao Wi-Fi de casa) e use os botões de envio.
+
+O app usa o proxy do sistema por meio de um arquivo PAC servido por ele mesmo: se o app fechar sem desconectar, o
+Windows volta a navegar direto. Navegadores e apps que respeitam o proxy do Windows passam pela Rede P2P.
+
 ## Como funciona
 
 - O compartilhador cria um grupo Wi-Fi Direct (`DIRECT-RP-RedeP2P`) e roda um proxy SOCKS5
@@ -45,4 +56,5 @@ antes de criar a própria rede.
 
 - `app/` — app Android (Kotlin)
 - `tun2socks-bridge/` — ponte em Go para o tun2socks, compilada com gomobile
+- `windows-client/` — cliente para Windows em Go (sem dependências), com modo medição
 - `.github/workflows/build.yml` — compilação automática
