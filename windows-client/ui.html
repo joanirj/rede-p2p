@@ -56,7 +56,7 @@
 <div class="page">
   <header>
     <h1>Rede P2P · notebook</h1>
-    <div class="muted">Usa a internet de um compartilhador por perto e mede até onde a rede alcança. <span id="ver"></span></div>
+    <div class="muted">No teste de alcance, o notebook só compartilha: o celular faz as medições. <span id="ver"></span></div>
   </header>
 
   <section class="card" aria-label="Compartilhar">
@@ -72,7 +72,10 @@
     <div id="clients" class="muted"></div>
   </section>
 
-  <section class="card" aria-label="Conexão">
+  <details class="card">
+  <summary style="cursor:pointer;font-weight:600">Outras funções: usar a internet de outro aparelho e medir pelo notebook</summary>
+  <div style="display:grid;gap:18px;margin-top:14px">
+  <section aria-label="Conexão">
     <h2>Usar a internet de outro aparelho</h2>
     <div class="row">
       <span id="state" class="pill off">Desconectado</span>
@@ -93,14 +96,14 @@
     <div id="wifiNote" class="muted"></div>
   </section>
 
-  <section class="card" aria-label="Medição de alcance">
+  <section aria-label="Medição de alcance">
     <h2>Medição de alcance</h2>
     <p class="muted" style="margin-top:0">Três cenários, um de cada vez. Em cada ponto, fique parado e clique em <b>Medir aqui</b>: leva uns 15 segundos. A medição gasta créditos (cerca de 3 MB por ponto).</p>
     <div class="tabs" id="tabs"></div>
     <div id="scenario"></div>
   </section>
 
-  <section class="card" aria-label="Resultados">
+  <section aria-label="Resultados">
     <h2>Resultados</h2>
     <div class="summary" id="summary"></div>
     <div class="scroll" style="margin-top:12px">
@@ -115,6 +118,9 @@
     </div>
     <p class="muted">Para enviar, o notebook precisa estar com internet: desconecte da Rede P2P antes. Os resultados ficam salvos.</p>
   </section>
+
+  </div>
+  </details>
 
   <section class="card" aria-label="Registro">
     <h2>Registro (log)</h2>

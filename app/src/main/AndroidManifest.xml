@@ -37,9 +37,9 @@
         </activity>
 
         <activity
-            android:name=".MeasureActivity"
+            android:name=".RangeTestActivity"
             android:exported="false"
-            android:label="Medição de alcance" />
+            android:label="Teste de alcance" />
 
         <service
             android:name=".HostService"

@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	appVersion = "0.2.0"
+	appVersion = "0.3.0"
 
 	// Iguais ao app Android (Core.kt / Billing.kt).
 	passphrase  = "redep2p123"

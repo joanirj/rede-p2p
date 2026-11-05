@@ -63,20 +63,20 @@ class MainActivity : Activity() {
         }
         root.addView(statusView)
 
-        root.addView(section("Este aparelho tem Wi-Fi com internet"))
+        root.addView(section("1. Compartilhar: este aparelho fornece internet"))
         root.addView(button("Compartilhar internet") { startHost(null) })
+        root.addView(button("Repetir internet de outro aparelho") { startHost(HostService.ACTION_REPEAT) })
+        root.addView(hint("Repetir: o Android pergunta a qual rede conectar; escolha uma DIRECT-RP-…"))
         root.addView(button("Parar de compartilhar") { stopHost() })
 
-        root.addView(section("Este aparelho vai repassar a internet de outro"))
-        root.addView(button("Repetir internet de outro aparelho") { startHost(HostService.ACTION_REPEAT) })
-        root.addView(hint("O Android vai perguntar a qual rede conectar: escolha DIRECT-RP-RedeP2P (ou outro DIRECT-RP-…). Para parar, use \"Parar de compartilhar\"."))
-
-        root.addView(section("Este aparelho está sem internet"))
+        root.addView(section("2. Usar: este aparelho está sem internet"))
         root.addView(button("Usar internet de outro aparelho") { startClient(Config.NETWORK_NAME) })
         root.addView(button("Usar internet de um repetidor") { startClient(Config.REPEATER_NAME) })
         root.addView(button("Usar internet de um notebook ou PC") { startClient(Config.NOTEBOOK_NAME, wifiOnly = true) })
-        root.addView(button("Medir alcance") { startActivity(Intent(this, MeasureActivity::class.java)) })
         root.addView(button("Parar de usar") { stopClient() })
+
+        root.addView(section("3. Teste de alcance: este celular mede, os outros compartilham"))
+        root.addView(button("Abrir o teste de alcance") { startActivity(Intent(this, RangeTestActivity::class.java)) })
 
         root.addView(section("Créditos"))
         creditsView = TextView(this).apply { textSize = 14f }
