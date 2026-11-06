@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Faixa exibida na tela inicial da Android TV (320 × 180). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <size android:width="320dp" android:height="180dp" />
+            <solid android:color="#0F8079" />
+        </shape>
+    </item>
+    <item android:gravity="center" android:width="120dp" android:height="120dp"
+        android:drawable="@android:drawable/stat_sys_upload" />
+</layer-list>
